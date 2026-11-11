@@ -61,7 +61,10 @@ try {
   # The app bundle needs coucou-hook.exe next to the target, so it goes first.
   cargo build --release -p coucou-hook
   if ($LASTEXITCODE -ne 0) { throw "coucou-hook did not build" }
-  cargo build --release -p coucou
+  # `tauri/custom-protocol` is what makes this a production build: without it
+  # `tauri::is_dev()` is true, the frontend is never embedded and the webview
+  # goes looking for http://localhost:1420 instead of the bundled pages.
+  cargo build --release -p coucou --features tauri/custom-protocol
   if ($LASTEXITCODE -ne 0) { throw "coucou did not build" }
 } finally {
   Pop-Location
