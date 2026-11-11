@@ -126,7 +126,7 @@ export function apply(ctx, rawConfig) {
     /* the log below reports it */
   }
   const log = makeLog(stateDir, config.logLevel);
-  log('info', `bridge start (protocol=${PROTOCOL})`);
+  log('info', `bridge start (protocol=${PROTOCOL} build=6)`);
 
   /** Live sessions we know about: sessionId → record. */
   const sessions = new Map();
@@ -147,24 +147,57 @@ export function apply(ctx, rawConfig) {
     }
   };
 
-  const catalog = () => {
+  /**
+   * Provider/model/effort catalog, read from the live DSH registry.
+   *
+   * `listModels` only carries id/name/description: the reasoning efforts of a
+   * model come from `resolveModelInfo`, which must be asked per exact model.
+   * That is what makes "never offer an effort the model does not support" true
+   * instead of a guess from a hard-coded table.
+   */
+  const catalog = async () => {
     const llm = ctx.get('llm');
     if (!llm) return { providers: [], fetchedAt: Date.now() };
-    const providers = llm.listProviders().map((provider) => {
-      let models = [];
-      try {
-        models = llm.listModels(provider.id).map((model) => ({
-          id: model.id,
-          name: model.name ?? model.id,
-          efforts: (model.reasoning?.efforts ?? []).map((e) => ({ id: e.id, name: e.name ?? e.id })),
-          defaultEffort: model.reasoning?.defaultEffort,
-          contextWindow: model.contextWindow,
-        }));
-      } catch (error) {
-        log('warn', `catalog: ${provider.id} failed: ${clip(error?.message ?? error)}`);
-      }
-      return { id: provider.id, name: provider.name ?? provider.id, models };
-    });
+    const providers = await Promise.all(
+      llm.listProviders().map(async (provider) => {
+        let models = [];
+        try {
+          const listed = await llm.listModels(provider.id);
+          const entries = Array.isArray(listed) ? listed : [];
+          models = await Promise.all(
+            entries.map(async (model) => {
+              const entry = {
+                id: model.id,
+                name: model.name ?? model.id,
+                description: model.description,
+                efforts: [],
+                defaultEffort: null,
+                contextWindow: undefined,
+                maxTokens: undefined,
+              };
+              try {
+                const resolved = await llm.resolveModelInfo(provider.id, model.id);
+                entry.efforts = (resolved?.reasoning?.efforts ?? []).map((e) => ({
+                  id: e.id,
+                  name: e.name ?? e.id,
+                }));
+                entry.defaultEffort = resolved?.reasoning?.defaultEffort ?? null;
+                entry.contextWindow = resolved?.context?.contextWindow ?? undefined;
+                entry.maxTokens = resolved?.defaultMaxTokens ?? undefined;
+              } catch (error) {
+                // A model whose capabilities cannot be read is still listed, but
+                // without efforts: the island must not invent any.
+                log('debug', `catalog: resolve ${provider.id}/${model.id} failed: ${clip(error?.message ?? error)}`);
+              }
+              return entry;
+            }),
+          );
+        } catch (error) {
+          log('warn', `catalog: ${provider.id} failed: ${clip(error?.message ?? error)}`);
+        }
+        return { id: provider.id, name: provider.name ?? provider.id, models };
+      }),
+    );
     return { providers, fetchedAt: Date.now() };
   };
 
@@ -178,18 +211,38 @@ export function apply(ctx, rawConfig) {
     };
   };
 
+  /** Best-effort session title from the client projections, never awaited. */
+  const titleOf = (session) => {
+    try {
+      const projections = ctx.get('sessionProjections');
+      const snapshot = projections?.snapshot?.(session, ['title']);
+      const title = snapshot?.values?.title;
+      if (typeof title !== 'string') return null;
+      // Titles are the first prompt verbatim: drop a heading marker and any
+      // second line so the island shows one short row.
+      const clean = title.replace(/^[#>\s]+/, '').split('\n')[0].trim();
+      return clean ? clip(clean, 120) : null;
+    } catch {
+      return null;
+    }
+  };
+
   const publishSession = (agent) => {
     const session = agent?.session;
     if (!session) return;
-    const selection = selectionOf(agent);
+    const header = session.header ?? {};
+    const previous = sessions.get(session.id);
     sessions.set(session.id, {
       id: session.id,
-      cwd: session.meta?.cwd ?? '',
-      title: session.title ?? null,
-      createdAt: session.createdAt ?? null,
-      model: selection,
-      state: sessions.get(session.id)?.state ?? 'idle',
-      since: Date.now(),
+      cwd: header.cwd ?? '',
+      agentPreset: header.agentPreset ?? null,
+      // A title arrives later as a `session/title` event; keep the one we have,
+      // otherwise read what the client projections already know.
+      title: previous?.title ?? titleOf(session),
+      createdAt: header.createdAt ?? null,
+      model: selectionOf(agent),
+      state: previous?.state ?? 'idle',
+      since: previous?.since ?? Date.now(),
     });
     send({ t: 'session.upsert', session: sessions.get(session.id) });
   };
@@ -335,6 +388,13 @@ export function apply(ctx, rawConfig) {
         }
         break;
 
+      case 'session/title':
+        if (record && event.data?.title) {
+          record.title = clip(event.data.title, 120);
+          send({ t: 'session.upsert', session: record });
+        }
+        break;
+
       default:
         break;
     }
@@ -380,15 +440,20 @@ export function apply(ctx, rawConfig) {
           }
           authed = true;
           client = socket;
-          socket.write(
-            `${JSON.stringify({
-              t: 'ready',
-              protocol: PROTOCOL,
-              hostPid: process.pid,
-              catalog: catalog(),
-              sessions: [...sessions.values()],
-            })}\n`,
-          );
+          // The handshake carries the catalog and the live sessions, so the
+          // island opens with real data instead of an empty first paint.
+          void catalog().then((state) => {
+            if (client !== socket) return;
+            socket.write(
+              `${JSON.stringify({
+                t: 'ready',
+                protocol: PROTOCOL,
+                hostPid: process.pid,
+                catalog: state,
+                sessions: [...sessions.values()],
+              })}\n`,
+            );
+          });
           log('info', 'pipe: Coucou connected');
           return;
         }
@@ -458,7 +523,9 @@ export function apply(ctx, rawConfig) {
         break;
       }
       case 'catalog.get':
-        send({ t: 'result', requestId: message.requestId, ok: true, value: catalog() });
+        void catalog().then((state) =>
+          send({ t: 'result', requestId: message.requestId, ok: true, value: state }),
+        );
         break;
       case 'ping':
         send({ t: 'pong', ts: Date.now() });
@@ -473,7 +540,16 @@ export function apply(ctx, rawConfig) {
   ctx.on('approval/request', onApproval);
   ctx.on('session/event', onSessionEvent);
   ctx.on('agent/created', ({ agent }) => publishSession(agent));
-  ctx.on('llm/models-updated', () => send({ t: 'catalog', ...catalog() }));
+  ctx.on('llm/models-updated', () => {
+    void catalog().then((state) => send({ t: 'catalog', ...state }));
+  });
+
+  // Sessions that already exist when the plugin loads (a hot patch applies to a
+  // running host) would otherwise stay invisible until their next event.
+  const liveAgents = ctx.get('agents');
+  if (liveAgents) {
+    for (const agent of liveAgents.list()) publishSession(agent);
+  }
 
   ctx.effect(() => () => {
     log('info', 'bridge stop');
