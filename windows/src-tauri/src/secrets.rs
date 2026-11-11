@@ -3,7 +3,14 @@
 
 use keyring::Entry;
 
-const SERVICE: &str = "fr.louisraille.coucou";
+/// Credential Manager service name. A test build uses its own, so it can never
+/// read — or overwrite — the installed copy's API keys.
+fn service() -> String {
+    match crate::build_mode::suffix() {
+        Some(suffix) => format!("fr.louisraille.coucou{suffix}"),
+        None => "fr.louisraille.coucou".to_string(),
+    }
+}
 
 /// Every key Coucou may store. Anything outside this list is refused.
 pub const KNOWN_KEYS: &[&str] = &[
@@ -32,7 +39,7 @@ fn entry(key: &str) -> Option<Entry> {
     if !KNOWN_KEYS.contains(&key) {
         return None;
     }
-    Entry::new(SERVICE, key).ok()
+    Entry::new(&service(), key).ok()
 }
 
 pub fn get(key: &str) -> Option<String> {
@@ -92,7 +99,7 @@ fn internal_entry(key: &str) -> Result<Entry, String> {
     if !is_internal(key) {
         return Err(format!("unknown key {key}"));
     }
-    Entry::new(SERVICE, key).map_err(|e| e.to_string())
+    Entry::new(&service(), key).map_err(|e| e.to_string())
 }
 
 pub fn get_internal(key: &str) -> Option<String> {

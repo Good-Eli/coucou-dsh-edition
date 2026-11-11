@@ -26,10 +26,27 @@ const ERROR_PIPE_BUSY: i32 = 231;
 /// `\\.\pipe\coucou-<sid>`. The SID keeps two accounts on the same machine from
 /// ever meeting on the same pipe; the name falls back to the user name only if
 /// the SID cannot be read at all, which should not happen.
+///
+/// A test build of Coucou serves `\\.\pipe\coucou-<tag>-<sid>`. The hook cannot
+/// see Coucou's own idea of the suffix — it is spawned by the agent, not by us —
+/// so it reads `COUCOU_DATA_SUFFIX` from its own environment. The test build
+/// therefore only receives hook events from agents started with that variable,
+/// which is the point: it must not steal the installed copy's traffic.
 fn pipe_path() -> String {
     let key = current_user_sid()
         .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
-    format!(r"\\.\pipe\coucou-{key}")
+    let tag = std::env::var("COUCOU_DATA_SUFFIX")
+        .ok()
+        .map(|v| v.trim().trim_start_matches('-').to_string())
+        .filter(|v| {
+            !v.is_empty()
+                && v.len() <= 32
+                && v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        });
+    match tag {
+        Some(tag) => format!(r"\\.\pipe\coucou-{tag}-{key}"),
+        None => format!(r"\\.\pipe\coucou-{key}"),
+    }
 }
 
 /// Opens the pipe. Retries only while the server is busy: any other error means

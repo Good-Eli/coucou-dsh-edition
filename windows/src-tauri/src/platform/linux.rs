@@ -41,14 +41,37 @@ fn xdg(var: &str, fallback: &str) -> PathBuf {
 
 /// ~/.config/coucou — preferences.
 pub fn config_dir() -> PathBuf {
-    xdg("XDG_CONFIG_HOME", ".config").join("coucou")
+    xdg("XDG_CONFIG_HOME", ".config").join(dir_name())
 }
 
 /// ~/.local/share/coucou — where coucou-hook, the inbox and the log live. The
 /// relay has to sit at a stable path: an AppImage is mounted somewhere new on
 /// every launch.
 pub fn local_dir() -> PathBuf {
-    xdg("XDG_DATA_HOME", ".local/share").join("coucou")
+    xdg("XDG_DATA_HOME", ".local/share").join(dir_name())
+}
+
+/// `coucou`, or `coucou-dsh-test` in an isolated test build.
+///
+/// The Windows side capitalises (`Coucou`); XDG paths are lower case by
+/// convention, so the same suffix is appended to the lower-case name here.
+fn dir_name() -> String {
+    match crate::build_mode::suffix() {
+        Some(suffix) => format!("coucou{suffix}"),
+        None => "coucou".to_string(),
+    }
+}
+
+/// Shows the reason the process must stop. Linux has a console, so stderr is
+/// enough; the message is also what the launcher shows in its log.
+pub fn fatal(message: &str) {
+    eprintln!("[coucou] {message}");
+}
+
+/// A test build's own single-instance guard (see the Windows implementation).
+/// Good enough while the isolation work targets Windows.
+pub fn claim_single_instance(_name: &str) -> bool {
+    true
 }
 
 /// Where a saved image goes, best first: the XDG pictures folder named in

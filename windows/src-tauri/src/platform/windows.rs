@@ -54,20 +54,21 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 // ── Files ─────────────────────────────────────────────────────────────────────
 
-/// %APPDATA%\Coucou — preferences.
+/// %APPDATA%\Coucou — preferences. %APPDATA%\Coucou-dsh-test in a test build.
 pub fn config_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("Coucou")
+    base.join(crate::build_mode::dir_name())
 }
 
 /// %LOCALAPPDATA%\Coucou — where coucou-hook.exe, the inbox and the log live.
+/// %LOCALAPPDATA%\Coucou-dsh-test in a test build.
 pub fn local_dir() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("Coucou")
+    base.join(crate::build_mode::dir_name())
 }
 
 /// Where a saved image goes, best first: Pictures (also where OneDrive moves
@@ -95,8 +96,63 @@ pub fn ensure_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)
 }
 
-/// Nothing to set up before the webview starts.
-pub fn prepare_environment() {}
+/// Set before the webview starts.
+///
+/// A test build keeps its WebView2 profile in its own folder: Tauri would
+/// otherwise point both builds at `%LOCALAPPDATA%\<identifier>\EBWebView` and
+/// the two would fight over one profile.
+pub fn prepare_environment() {
+    if crate::build_mode::is_test() {
+        let dir = local_dir().join("WebView2");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir);
+        }
+    }
+}
+
+/// Shows a blocking message box and keeps it on screen until acknowledged.
+///
+/// Used when the process must refuse to start (a test build without its
+/// suffix): there is no console to print to, and silently exiting would look
+/// like a crash.
+pub fn fatal(message: &str) {
+    use windows::core::HSTRING;
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+    let text = HSTRING::from(message);
+    let title = HSTRING::from("Coucou");
+    unsafe {
+        MessageBoxW(None, &text, &title, MB_OK | MB_ICONERROR);
+    }
+}
+
+/// Claims a machine-local single-instance mutex, returning false if one exists.
+///
+/// The Tauri plugin keys its mutex on the bundle identifier, which the installed
+/// copy and a test build share; using it would make the test build hand its
+/// arguments to the installed copy and quit. A test build therefore takes this
+/// guard instead, under its own name. The handle is kept for the life of the
+/// process and released by Windows when it ends.
+pub fn claim_single_instance(name: &str) -> bool {
+    use windows::core::HSTRING;
+    use windows::Win32::Foundation::ERROR_ALREADY_EXISTS;
+    use windows::Win32::System::Threading::CreateMutexW;
+
+    static KEEP: std::sync::OnceLock<isize> = std::sync::OnceLock::new();
+    let wide = HSTRING::from(name);
+    let handle = unsafe { CreateMutexW(None, true, &wide) };
+    match handle {
+        Ok(handle) => {
+            let already = unsafe { windows::Win32::Foundation::GetLastError() } == ERROR_ALREADY_EXISTS;
+            if already {
+                false
+            } else {
+                let _ = KEEP.set(handle.0 as isize);
+                true
+            }
+        }
+        Err(_) => true,
+    }
+}
 
 pub fn local_time() -> LocalTime {
     let t = unsafe { GetLocalTime() };

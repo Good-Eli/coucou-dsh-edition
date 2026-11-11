@@ -351,6 +351,11 @@ pub fn preview(id: &str, install: bool) -> Result<Plan, String> {
 
 /// Only ever called from an explicit click. Returns the backups taken, one per line.
 pub fn apply(id: &str, install: bool, fingerprint: &str) -> Result<String, String> {
+    // Same reason as hooks::write: these files are the user's, shared with the
+    // installed Coucou.
+    if crate::build_mode::is_test() {
+        return Err("this is an isolated test build: it does not write agent settings".into());
+    }
     let agent = find(id)?;
     apply_in(agent, &platform::home_dir(), &Relay::current(), install, fingerprint)
 }

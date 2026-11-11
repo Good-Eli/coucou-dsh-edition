@@ -2,6 +2,7 @@
 
 mod agent_hooks;
 mod agents;
+mod build_mode;
 mod chat;
 mod claude;
 mod claude_code;
@@ -120,7 +121,7 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
     if let Err(err) = settings::save(&settings) {
         log::line(format!("could not save settings: {err}"));
     }
-    if autostart_changed {
+    if autostart_changed && !build_mode::is_test() {
         let manager = app.autolaunch();
         let result = if settings.autostart { manager.enable() } else { manager.disable() };
         if let Err(err) = result {
@@ -852,13 +853,31 @@ fn open_settings_window(app: AppHandle, page: Option<String>) {
 }
 
 pub fn run() {
+    // A test build refuses to start without its suffix: it would otherwise use
+    // the installed copy's folders, relay pipe and stored API keys.
+    if let Err(message) = build_mode::check() {
+        eprintln!("[coucou] {message}");
+        platform::fatal(&message);
+        return;
+    }
+
     platform::prepare_environment();
     let loaded = settings::load();
     i18n::set_picked(&loaded.language);
     let gate = Arc::new(PollGate::new());
 
-    let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+    let mut builder = tauri::Builder::default();
+    if build_mode::is_test() {
+        // The plugin keys its mutex on the bundle identifier, which both builds
+        // share, so a test build would hand its arguments to the installed copy
+        // and quit. A test build takes its own guard instead.
+        let name = format!("coucou-{}-single-instance", build_mode::pipe_tag());
+        if !platform::claim_single_instance(&name) {
+            log::line("another test build of Coucou is already running; leaving it alone");
+            return;
+        }
+    } else {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // `coucou --shortcut <action>`: what a desktop's own keyboard
             // settings run where we can't listen for keys ourselves (Wayland).
             match shortcuts::from_args(&argv) {
@@ -866,8 +885,14 @@ pub fn run() {
                 // Opening Coucou again (its shortcut, the Start menu) shows its window.
                 None => show_hub(app, None),
             }
-        }))
-        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![AUTOSTART_ARG])));
+        }));
+    }
+    // A test build never registers an autostart entry, so the plugin that could
+    // write one is simply not loaded.
+    if !build_mode::is_test() {
+        builder = builder
+            .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![AUTOSTART_ARG])));
+    }
     // Where no global shortcut can work, the plugin isn't even started.
     if platform::global_shortcuts_blocked().is_none() {
         builder = builder.plugin(shortcuts::plugin());
@@ -1108,7 +1133,7 @@ pub fn run() {
             shortcuts::apply(&handle, &loaded.shortcuts);
             // New versions: nothing goes to GitHub until the user agrees (update.rs).
             update::start(handle.clone());
-            if loaded.autostart {
+            if loaded.autostart && !build_mode::is_test() {
                 // Login items written before 0.5 start Coucou without --autostart:
                 // writing it again adds it, so the window stays hidden at login.
                 let _ = handle.autolaunch().enable();

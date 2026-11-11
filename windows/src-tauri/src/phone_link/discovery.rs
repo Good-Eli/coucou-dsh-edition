@@ -14,6 +14,18 @@ use std::time::Duration;
 
 /// The DNS-SD service type. The phone browses for `_coucou._tcp`.
 pub const SERVICE_TYPE: &str = "_coucou._tcp.local.";
+
+/// The service type this process announces.
+///
+/// A test build uses its own (`_coucou-dsh-test._tcp.local.`) so it can never
+/// answer the user's phone in place of the installed Coucou, and so the phone
+/// cannot pair with a build whose data is temporary.
+pub fn service_type() -> String {
+    match crate::build_mode::suffix() {
+        Some(suffix) => format!("_coucou{suffix}._tcp.local."),
+        None => SERVICE_TYPE.to_string(),
+    }
+}
 /// How many hex characters of the certificate fingerprint go into the TXT record.
 pub const FP_ID_LEN: usize = 16;
 /// The protocol version in the TXT record (docs/ANDROID_LINK.md stays at v=1).
@@ -130,7 +142,7 @@ impl Publisher for MdnsPublisher {
         let daemon = ServiceDaemon::new().map_err(|e| e.to_string())?;
         // The server listens on IPv4 only; announcing an IPv6 address would send the phone to a dead end.
         let _ = daemon.disable_interface(IfKind::IPv6);
-        let info = ServiceInfo::new(SERVICE_TYPE, &ad.instance, &ad.host, "", ad.port, ad.txt.as_slice())
+        let info = ServiceInfo::new(&service_type(), &ad.instance, &ad.host, "", ad.port, ad.txt.as_slice())
             .map_err(|e| e.to_string())?
             .enable_addr_auto();
         if let Err(e) = daemon.register(info) {
@@ -143,7 +155,7 @@ impl Publisher for MdnsPublisher {
 
     fn withdraw(&self, ad: &Advert) {
         let Some(daemon) = self.daemon.lock().unwrap().take() else { return };
-        let fullname = format!("{}.{}", ad.instance, SERVICE_TYPE);
+        let fullname = format!("{}.{}", ad.instance, service_type());
         // A goodbye packet lets phones forget the service at once; then the daemon thread ends.
         if let Ok(done) = daemon.unregister(&fullname) {
             let _ = done.recv_timeout(Duration::from_millis(500));

@@ -62,11 +62,20 @@ pub struct Pending(pub Mutex<HashMap<String, mpsc::Sender<Reply>>>);
 static COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// `\\.\pipe\coucou-<sid>` — must match coucou-hook's `pipe_path()` exactly.
+///
+/// A test build uses `\\.\pipe\coucou-<tag>-<sid>` so the two copies never
+/// answer each other's relay. The DSH bridge pipe is a separate channel and is
+/// deliberately left alone: both copies talk to the same running DSH.
 #[cfg(windows)]
 pub fn pipe_name() -> String {
     let key = crate::platform::current_user_sid()
         .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
-    format!(r"\\.\pipe\coucou-{key}")
+    let tag = crate::build_mode::pipe_tag();
+    if tag.is_empty() {
+        format!(r"\\.\pipe\coucou-{key}")
+    } else {
+        format!(r"\\.\pipe\coucou-{tag}-{key}")
+    }
 }
 
 #[cfg(windows)]

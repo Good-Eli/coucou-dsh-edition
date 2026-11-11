@@ -234,6 +234,11 @@ fn plan_to_preview(plan: config_file::Plan) -> HookPreview {
 /// `fingerprint` is the one the preview was computed from: a settings.json that
 /// changed in between is refused rather than overwritten (see config_file).
 pub fn write(install: bool, fingerprint: &str) -> Result<String, String> {
+    // Agent settings files (and their hooks) belong to the user's real agents and
+    // are shared with the installed Coucou. A test build must not rewrite them.
+    if crate::build_mode::is_test() {
+        return Err("this is an isolated test build: it does not write agent settings".into());
+    }
     let backups = config_file::apply(&edits(install), fingerprint)?;
     Ok(backups.first().map(|p| p.to_string_lossy().to_string()).unwrap_or_default())
 }
@@ -326,6 +331,9 @@ pub fn status_line_preview(install: bool) -> Result<HookPreview, String> {
 /// the hooks. Installing first saves a status line of the user's own, removing
 /// puts it back (or removes the key if there was none).
 pub fn status_line_write(install: bool, fingerprint: &str) -> Result<String, String> {
+    if crate::build_mode::is_test() {
+        return Err("this is an isolated test build: it does not write agent settings".into());
+    }
     let before = config_file::read(&settings_path())
         .and_then(|bytes| config_file::parse_json(bytes.as_deref(), "settings.json"))?;
     let previous = read_status_line_previous();

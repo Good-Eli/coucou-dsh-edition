@@ -454,6 +454,12 @@ fn set_phase(app: &AppHandle, phase: Phase) {
 /// At launch: a first look 30 s in, then every hour (GitHub only every 6 h).
 /// The task sleeps in between: nothing runs while nothing is due.
 pub fn start(app: AppHandle) {
+    // A test build must never update itself, and must never offer to replace
+    // itself with an upstream release: that would install Coucou over the mod.
+    if crate::build_mode::is_test() {
+        crate::log::line("updates: disabled in an isolated test build");
+        return;
+    }
     remove_old_downloads();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(FIRST_TICK).await;
@@ -537,6 +543,9 @@ async fn fetch_latest() -> Result<Option<Release>, String> {
 /// One look at GitHub. `manual`: "Check now" in Settings, which opens the card
 /// when a new version is out.
 pub async fn check(app: &AppHandle, manual: bool) {
+    if crate::build_mode::is_test() {
+        return;
+    }
     {
         let mut s = state();
         if s.busy() || s.check == CheckState::Checking {
@@ -599,6 +608,10 @@ fn remove_old_downloads() {
 
 /// "Update now": downloads, checks and runs the installer, then quits.
 pub fn install(app: &AppHandle) {
+    // Never replace a test build with an upstream release.
+    if crate::build_mode::is_test() {
+        return;
+    }
     let kind = this_install();
     let release = {
         let mut s = state();
