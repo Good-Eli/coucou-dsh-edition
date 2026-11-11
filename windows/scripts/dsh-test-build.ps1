@@ -28,6 +28,14 @@ New-Item -ItemType Directory -Force -Path $dest | Out-Null
 robocopy $source $dest /MIR /XD target node_modules .git /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed with code $LASTEXITCODE" }
 
+# Some tests read fixtures from the repository root (android/relay/test-vectors.json),
+# so the mirror needs them too even though a build does not.
+$androidSource = Join-Path (Split-Path -Parent $source) 'android'
+if (Test-Path -LiteralPath $androidSource) {
+  robocopy $androidSource (Join-Path $Mirror 'android') /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+  if ($LASTEXITCODE -ge 8) { throw "robocopy of android/ failed with code $LASTEXITCODE" }
+}
+
 # node_modules is large and never changes here, so it is linked rather than copied.
 $link = Join-Path $dest 'node_modules'
 if (-not (Test-Path -LiteralPath $link)) {
