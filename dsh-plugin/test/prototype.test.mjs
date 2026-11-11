@@ -290,6 +290,45 @@ test('a second client cannot steal the first one’s card', async () => {
   first.socket.destroy();
 });
 
+test('a decision timeout hands the card back to DSH', async () => {
+  const { ctx, runtime } = startBridge({ ackTimeoutMs: 300, decisionTimeoutMs: 700 });
+  const client = await connectClient(runtime);
+  await client.waitFor((m) => m.t === 'ready');
+
+  let delegated = 0;
+  const pending = ctx.fire('approval/request', approvalRequest(), async () => {
+    delegated++;
+    return 'unavailable';
+  });
+  const asked = await client.waitFor((m) => m.t === 'approval.asked');
+  client.socket.write(`${JSON.stringify({ t: 'approval.ack', requestId: asked.requestId })}\n`);
+
+  const [outcome] = await pending;
+  assert.equal(delegated, 1, 'an unanswered card must reach the stock UI');
+  assert.notEqual(outcome, 'allowed-once');
+  client.socket.destroy();
+});
+
+test('a click after the timeout is discarded', async () => {
+  const { ctx, runtime } = startBridge({ ackTimeoutMs: 200, decisionTimeoutMs: 400 });
+  const client = await connectClient(runtime);
+  await client.waitFor((m) => m.t === 'ready');
+
+  const pending = ctx.fire('approval/request', approvalRequest(), async () => 'unavailable');
+  const asked = await client.waitFor((m) => m.t === 'approval.asked');
+  client.socket.write(`${JSON.stringify({ t: 'approval.ack', requestId: asked.requestId })}\n`);
+  const [outcome] = await pending;
+  assert.notEqual(outcome, 'allowed-once');
+
+  // A very late click must not grant anything.
+  client.socket.write(
+    `${JSON.stringify({ t: 'approval.answer', requestId: asked.requestId, decision: 'allow' })}\n`,
+  );
+  await new Promise((r) => setTimeout(r, 150));
+  assert.notEqual(outcome, 'allowed-once');
+  client.socket.destroy();
+});
+
 // ── masking ──────────────────────────────────────────────────────────────────
 
 test('secrets never survive masking', () => {

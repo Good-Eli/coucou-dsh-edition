@@ -30,8 +30,8 @@ export const PROTOCOL = 1;
 /** DSH versions this prototype was written against. */
 export const SUPPORTED_DSH = ['0.2.2-rc.1'];
 
-const ACK_TIMEOUT_MS = 1500;
-const DECISION_TIMEOUT_MS = 110_000;
+
+
 const MAX_LINE = 1 << 20;
 const HEARTBEAT_MS = 5000;
 
@@ -42,6 +42,10 @@ const DEFAULTS = {
   stateDir: '',
   /** Extra suffix on the pipe name; tests use it to run side by side. */
   pipeSuffix: '',
+  /** How long the island has to confirm the card is on screen. */
+  ackTimeoutMs: 1500,
+  /** How long a human has to answer before DSH asks in its own window. */
+  decisionTimeoutMs: 110_000,
   logLevel: 'info',
 };
 
@@ -229,7 +233,7 @@ export function apply(ctx, rawConfig) {
       title: call?.name ? clip(call.name, 80) : null,
       command: call?.arguments?.command ? clip(call.arguments.command, 300) : null,
       files,
-      expiresAt: Date.now() + DECISION_TIMEOUT_MS,
+      expiresAt: Date.now() + config.decisionTimeoutMs,
     };
     if (!send(asked)) return next();
 
@@ -241,19 +245,19 @@ export function apply(ctx, rawConfig) {
         decisionTimer: null,
       };
 
-      // The island must confirm the card is on screen within ACK_TIMEOUT_MS,
+      // The island must confirm the card is on screen within ackTimeoutMs,
       // otherwise DSH shows its own prompt and we never hold the tool call.
       entry.ackTimer = setTimeout(() => {
         if (!pending.has(requestId)) return;
         log('info', 'approval: no ack, falling back to the stock UI');
         settle(requestId, DELEGATE);
-      }, ACK_TIMEOUT_MS);
+      }, config.ackTimeoutMs);
 
       entry.decisionTimer = setTimeout(() => {
         if (!pending.has(requestId)) return;
         log('info', 'approval: decision timeout, falling back to the stock UI');
         settle(requestId, DELEGATE);
-      }, DECISION_TIMEOUT_MS);
+      }, config.decisionTimeoutMs);
 
       // An aborted request withdraws the question; a late click is discarded.
       if (request.signal) {
