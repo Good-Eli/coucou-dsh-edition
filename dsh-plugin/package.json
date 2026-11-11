@@ -1,0 +1,15 @@
+{
+  "name": "@coucou/dsh-bridge",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Coucou island bridge plugin for DeepSeek Harness (personal build)",
+  "type": "module",
+  "main": "bridge.mjs",
+  "scripts": {
+    "test": "node --test --test-force-exit \"test/*.test.mjs\"",
+    "live": "node test/live.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
