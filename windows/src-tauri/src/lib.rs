@@ -10,6 +10,7 @@ mod cli_relay;
 mod codex_plan;
 mod config_file;
 mod desktop;
+mod dsh;
 mod files;
 mod flow;
 mod github;
@@ -1086,6 +1087,12 @@ pub fn run() {
             update::update_dismiss,
             update::update_install,
             update::update_open_page,
+            dsh::client::dsh_snapshot,
+            dsh::client::dsh_select_session,
+            dsh::client::dsh_approval_ack,
+            dsh::client::dsh_approval,
+            dsh::client::dsh_refresh_catalog,
+            dsh::client::dsh_set_config,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -1124,6 +1131,7 @@ pub fn run() {
             log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION")));
             hooks::ensure_hook_exe(&handle);
             pipe::start(handle.clone());
+            dsh::start(handle.clone());
             phone_link::start_if_enabled(&handle);
             integrations::start(handle.clone());
             mail::start(handle.clone());
