@@ -82,6 +82,7 @@ export const PILL_CATALOG: readonly PillDefinition[] = [
   { id: "agent_codex", name: "Codex", color: "#2DD4BF", category: "workspace",
     subtitle: N_("Integration"), source: "agent", support: "yes", connect: hooks },
   // ── Agents ─────────────────────────────────────────────────────────────────
+
   { id: "agent_gemini", name: "Gemini CLI", color: "#8AB4F8", category: "agent",
     subtitle: N_("Agent"), source: "agent", support: "yes", connect: hooks },
   { id: "agent_copilot", name: "Copilot CLI", color: "#818CF8", category: "agent",
@@ -100,6 +101,11 @@ export const PILL_CATALOG: readonly PillDefinition[] = [
   // official builds for Windows and Linux (.deb).
   { id: "agent_claude-desktop", name: "Claude Desktop", color: "#D97757", category: "agent",
     subtitle: N_("Agent"), source: "agent", support: "yes", connect: none },
+  // DeepSeek Harness: its sessions and approvals come over its own bridge
+  // (src-tauri/src/dsh), not through the hook relay, so there is nothing to
+  // install — being connected means the bridge answered.
+  { id: "dsh", name: "DeepSeek Harness", color: "#4C8DFF", category: "agent",
+    subtitle: N_("Agent"), source: "agent", support: "windows", connect: { kind: "none" } },
   // ── AI for the chat ────────────────────────────────────────────────────────
   { id: "ai_anthropic", name: "Anthropic", color: ACCENT.anthropic, category: "ai",
     subtitle: N_("Chat"), source: "n8n", support: "yes", connect: key("anthropic-api-key") },

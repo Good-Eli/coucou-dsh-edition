@@ -31,6 +31,7 @@ test("the catalog holds the Mac's pills with the Claude Code label for Windows a
     ["agent_amp", "Amp", "#F59E0B", "agent", "Agent"],
     ["agent_hermes", "Hermes", "#C084FC", "agent", "Agent"],
     ["agent_claude-desktop", "Claude Desktop", "#D97757", "agent", "Agent"],
+    ["dsh", "DeepSeek Harness", "#4C8DFF", "agent", "Agent"],
     ["ai_anthropic", "Anthropic", "#E07950", "ai", "Chat"],
     ["ai_google", "Google AI", "#4285F4", "ai", "Chat"],
     ["ai_openai", "OpenAI", "#10A37F", "ai", "Chat"],
@@ -109,6 +110,10 @@ test("this build leaves out what only macOS has", () => {
     assert.ok(linux.includes(id), id);
   }
   assert.ok(windows.includes("agent_claude-desktop"));
+  // DSH is reached over its own Windows named-pipe bridge, so this build has it
+  // and Linux does not.
+  assert.ok(windows.includes("dsh"));
+  assert.ok(!linux.includes("dsh"));
   assert.ok(linux.includes("agent_claude-desktop"));
   // Mail is Outlook's, and Outlook is a Windows program.
   assert.ok(windows.includes("integration_mail"));
@@ -116,7 +121,7 @@ test("this build leaves out what only macOS has", () => {
   // Spotify: MPRIS on Linux, the system media controls on Windows.
   assert.ok(linux.includes("integration_spotify"));
   assert.ok(windows.includes("integration_spotify"));
-  assert.deepEqual(linux, windows.filter((id) => id !== "integration_mail"));
+  assert.deepEqual(linux, windows.filter((id) => id !== "integration_mail" && id !== "dsh"));
 });
 
 test("Spotify: a service on both systems with nothing to set up", () => {
