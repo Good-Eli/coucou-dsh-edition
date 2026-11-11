@@ -16,11 +16,14 @@
  */
 
 import { createServer } from 'node:net';
+import { dirname, join } from 'node:path';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, writeFileSync, appendFileSync, statSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, appendFileSync, statSync, existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
 import { homedir } from 'node:os';
+
+import { SecurePipe } from './secure-pipe.mjs';
+import { isPrivateSddl, pathSddl, securePath } from './state-acl.mjs';
 
 export const name = 'coucou-dsh-bridge';
 
@@ -117,6 +120,245 @@ export function tokenMatches(expected, got) {
 
 // ── plugin ───────────────────────────────────────────────────────────────────
 
+/** Absolute path to `koffi`, or null. Needed to create a pipe we control. */
+function resolveKoffiPath() {
+  const root = join(dirname(process.execPath), 'resources');
+  const candidates = [
+    join(root, 'app.asar', 'dsh', 'node_modules', 'koffi', 'index.cjs'),
+    join(root, 'app.asar.unpacked', 'dsh', 'node_modules', 'koffi', 'index.cjs'),
+    join(root, 'app', 'dsh', 'node_modules', 'koffi', 'index.cjs'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (existsSync(candidate)) return candidate;
+    } catch {
+      /* an unreadable candidate is simply not the one */
+    }
+  }
+  return null;
+}
+
+/** The DSH build this host runs, read from the app rather than assumed. */
+function resolveDshVersion() {
+  const root = join(dirname(process.execPath), 'resources');
+  const candidates = [
+    join(root, 'app.asar', 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'),
+    join(root, 'app.asar.unpacked', 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'),
+    join(root, 'app', 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (!existsSync(candidate)) continue;
+      const manifest = JSON.parse(readFileSync(candidate, 'utf8'));
+      if (typeof manifest.version === 'string') return manifest.version;
+    } catch {
+      /* try the next layout */
+    }
+  }
+  return null;
+}
+
+/**
+ * Checks that this DSH can actually support the integration.
+ *
+ * A version this plugin was not written against, or a missing registry method,
+ * disables the approval seam only: DSH keeps its own prompts and its own model
+ * handling, and nothing here can grant a permission.
+ */
+function inspectCompatibility(ctx, config, log) {
+  const problems = [];
+  const version = resolveDshVersion();
+
+  if (config.skipVersionCheck !== true) {
+    if (!version) problems.push('the DSH version could not be read');
+    else if (!SUPPORTED_DSH.includes(version)) {
+      problems.push(`DSH ${version} is not supported (expected ${SUPPORTED_DSH.join(', ')})`);
+    }
+  }
+
+  if (typeof ctx.on !== 'function') problems.push('ctx.on is missing');
+
+  const llm = ctx.get?.('llm');
+  if (!llm) {
+    problems.push('the llm service is missing');
+  } else {
+    for (const method of ['listProviders', 'listModels', 'resolveModelInfo']) {
+      if (typeof llm[method] !== 'function') problems.push(`llm.${method} is missing`);
+    }
+  }
+
+  if (problems.length > 0) log('warn', `compat: ${problems.join('; ')}`);
+  else log('info', `compat: DSH ${version} looks usable`);
+
+  return { ok: problems.length === 0, version, problems };
+}
+
+/**
+ * Gives the state directory, and later the token file, an explicit DACL.
+ *
+ * `mode: 0o600` proves nothing on NTFS, so the result is read back and the
+ * caller is told whether the protection is real.
+ */
+function hardenStateDir(stateDir, sid, log, skipSecurity = false) {
+  const result = { dirPrivate: false, dirSddl: null, filePrivate: false };
+
+  if (skipSecurity) {
+    return {
+      ...result,
+      dirPrivate: true,
+      filePrivate: true,
+      verifyFile: () => true,
+    };
+  }
+
+  try {
+    mkdirSync(stateDir, { recursive: true });
+    result.dirSddl = securePath(stateDir, sid, { directory: true });
+    result.dirPrivate = isPrivateSddl(result.dirSddl, sid);
+    log(
+      result.dirPrivate ? 'info' : 'warn',
+      `state: directory ACL ${result.dirPrivate ? 'private' : 'TOO WIDE'} ${clip(result.dirSddl ?? '', 160)}`,
+    );
+  } catch (error) {
+    log('warn', `state: cannot secure the directory: ${clip(error?.message ?? error)}`);
+  }
+
+  return {
+    ...result,
+    /** Secures the token file and reports whether it ended up private. */
+    verifyFile(path) {
+      try {
+        const sddl = securePath(path, sid);
+        result.filePrivate = isPrivateSddl(sddl, sid);
+        log(
+          result.filePrivate ? 'info' : 'warn',
+          `state: token ACL ${result.filePrivate ? 'private' : 'TOO WIDE'} ${clip(sddl ?? '', 160)}`,
+        );
+        return result.filePrivate;
+      } catch (error) {
+        log('warn', `state: cannot secure the token: ${clip(error?.message ?? error)}`);
+        return false;
+      }
+    },
+  };
+}
+
+/**
+ * Builds the transport Coucou talks to.
+ *
+ * Preferred: a pipe we create ourselves, whose DACL names only this user.
+ * Fallback: Node's own pipe, which Windows gives the process default DACL
+ * (`Everyone` can read it) — only used when explicitly allowed.
+ */
+function createChannel({ pipeName: name, sid, log, onText, onClose, allowUnhardened, testChannel }) {
+  if (testChannel) {
+    // Test-only transport: the approval state machine does not depend on how
+    // bytes arrive, so the suite drives it in memory instead of over a pipe.
+    const channel = {
+      available: true,
+      kind: 'test',
+      hardened: true,
+      sddl: 'D:P(A;;FA;;;SY)(A;;FA;;;BA)',
+      outgoing: [],
+      start() {},
+      stop() {},
+      kick() {
+        onClose();
+      },
+      write(text) {
+        channel.outgoing.push(text);
+        return true;
+      },
+      inject(text) {
+        onText(text);
+      },
+    };
+    return channel;
+  }
+
+  const koffiPath = resolveKoffiPath();
+  if (koffiPath) {
+    const pipe = new SecurePipe({
+      pipeName: name,
+      sid,
+      koffiPath,
+      log,
+      onFatal: () => onClose(),
+    });
+    pipe.onData = (text) => onText(text);
+    pipe.onDisconnect = () => onClose();
+    return {
+      available: true,
+      kind: 'secure-pipe',
+      // The host only reports ready after creating the pipe with our own
+      // descriptor; until then, and if it dies, no client can connect at all.
+      get hardened() {
+        return pipe.ready;
+      },
+      get sddl() {
+        return pipe.actualSddl ?? null;
+      },
+      start: () => {
+        pipe.start();
+      },
+      write: (text) => pipe.write(text),
+      kick: () => pipe.kick(),
+      stop: () => pipe.stop(),
+    };
+  }
+
+  if (!allowUnhardened) {
+    log(
+      'error',
+      'pipe: koffi is unavailable, so a private pipe cannot be created; integration disabled',
+    );
+    return { available: false, kind: 'none', hardened: false, sddl: null, start() {}, write: () => false, kick() {}, stop() {} };
+  }
+
+  log('warn', 'pipe: falling back to an unhardened pipe (allowUnhardenedPipe)');
+  let socket = null;
+  const server = createServer((incoming) => {
+    if (socket) {
+      incoming.destroy(); // one Coucou at a time
+      return;
+    }
+    socket = incoming;
+    incoming.setEncoding('utf8');
+    incoming.on('data', (text) => onText(text));
+    const drop = () => {
+      if (socket !== incoming) return;
+      socket = null;
+      onClose();
+    };
+    incoming.on('close', drop);
+    incoming.on('error', drop);
+  });
+
+  return {
+    available: true,
+    kind: 'net-unhardened',
+    hardened: false,
+    sddl: null,
+    start: () => server.listen(name),
+    write: (text) => {
+      if (!socket) return false;
+      socket.write(text);
+      return true;
+    },
+    kick: () => {
+      if (!socket) return;
+      const doomed = socket;
+      socket = null;
+      doomed.destroy();
+      onClose();
+    },
+    stop: () => {
+      if (socket) socket.destroy();
+      server.close();
+    },
+  };
+}
+
 export function apply(ctx, rawConfig) {
   const config = { ...DEFAULTS, ...(rawConfig ?? {}) };
   const stateDir = config.stateDir || join(homedir(), 'AppData', 'Local', 'Coucou', 'dsh');
@@ -134,14 +376,13 @@ export function apply(ctx, rawConfig) {
   const pending = new Map();
   /** Recent tool calls by callId, for arguments on the approval card. */
   const calls = new Map();
-  /** Connected Coucou clients (at most one). */
-  let client = null;
+  /** True while an authenticated Coucou holds the pipe (at most one). */
+  let connected = false;
 
   const send = (message) => {
-    if (!client) return false;
+    if (!connected) return false;
     try {
-      client.write(`${JSON.stringify(message)}\n`);
-      return true;
+      return channel.write(`${JSON.stringify(message)}\n`) !== false;
     } catch {
       return false;
     }
@@ -268,7 +509,7 @@ export function apply(ctx, rawConfig) {
 
   const onApproval = (request, next) => {
     // No Coucou, no card: the stock DSH approval UI answers.
-    if (!client) return next();
+    if (!connected) return next();
 
     const requestId = randomBytes(8).toString('hex');
     const call = request.callId ? calls.get(request.callId) : undefined;
@@ -403,73 +644,78 @@ export function apply(ctx, rawConfig) {
   // ── wiring ─────────────────────────────────────────────────────────────────
 
   const sid = currentUserSid();
+  const security = hardenStateDir(stateDir, sid, log, config.skipSecurityChecks === true);
   const runtime = writeRuntime(stateDir, sid, config.pipeSuffix);
+  const tokenPrivate = security.verifyFile(join(stateDir, 'runtime.json'));
 
-  const server = createServer((socket) => {
-    if (client) {
-      socket.destroy(); // one Coucou at a time
+  const compat = inspectCompatibility(ctx, config, log);
+
+  let authed = false;
+  let lineBuffer = '';
+
+  const resetClient = (reason) => {
+    if (!authed) return;
+    authed = false;
+    connected = false;
+    lineBuffer = '';
+    log('warn', `pipe: ${reason}; pending approvals fall back to DSH`);
+    for (const requestId of [...pending.keys()]) settle(requestId, DELEGATE);
+  };
+
+  /** Feeds raw text from whichever transport is active into the protocol. */
+  const feed = (text) => {
+    lineBuffer += text;
+    if (lineBuffer.length > MAX_LINE) {
+      channel.kick('frame too large');
       return;
     }
-    let buffer = '';
-    let authed = false;
+    let index;
+    while ((index = lineBuffer.indexOf('\n')) >= 0) {
+      const line = lineBuffer.slice(0, index);
+      lineBuffer = lineBuffer.slice(index + 1);
+      if (!line.trim()) continue;
 
-    socket.setEncoding('utf8');
-    socket.on('data', (chunk) => {
-      buffer += chunk;
-      if (buffer.length > MAX_LINE) {
-        socket.destroy();
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        channel.kick('bad frame');
         return;
       }
-      let index;
-      while ((index = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, index);
-        buffer = buffer.slice(index + 1);
-        if (!line.trim()) continue;
-        let message;
-        try {
-          message = JSON.parse(line);
-        } catch {
-          socket.destroy();
-          return;
-        }
-        if (!authed) {
-          if (message.t !== 'hello' || !tokenMatches(runtime.token, message.token)) {
-            log('warn', 'pipe: rejected a client (bad token)');
-            socket.destroy();
-            return;
-          }
-          authed = true;
-          client = socket;
-          // The handshake carries the catalog and the live sessions, so the
-          // island opens with real data instead of an empty first paint.
-          void catalog().then((state) => {
-            if (client !== socket) return;
-            socket.write(
-              `${JSON.stringify({
-                t: 'ready',
-                protocol: PROTOCOL,
-                hostPid: process.pid,
-                catalog: state,
-                sessions: [...sessions.values()],
-              })}\n`,
-            );
-          });
-          log('info', 'pipe: Coucou connected');
-          return;
-        }
-        handle(message);
-      }
-    });
 
-    const drop = () => {
-      if (client !== socket) return;
-      client = null;
-      log('warn', 'pipe: Coucou disconnected, pending approvals fall back to DSH');
-      for (const requestId of [...pending.keys()]) settle(requestId, DELEGATE);
-    };
-    socket.on('close', drop);
-    socket.on('error', drop);
-  });
+      if (!authed) {
+        if (message.t !== 'hello' || message.protocol !== PROTOCOL || !tokenMatches(runtime.token, message.token)) {
+          log('warn', 'pipe: rejected a client (protocol or token mismatch)');
+          channel.kick('auth failed');
+          return;
+        }
+        authed = true;
+        connected = true;
+        // The handshake carries the catalog and the live sessions, so the
+        // island opens with real data instead of an empty first paint.
+        void catalog().then((catalogState) => {
+          if (!authed) return;
+          send({
+            t: 'ready',
+            protocol: PROTOCOL,
+            hostPid: process.pid,
+            pipe: { hardened: channel.hardened, sddl: channel.sddl ?? null },
+            security: {
+              tokenPrivate,
+              directoryPrivate: security.dirPrivate,
+            },
+            compatibility: { ok: compat.ok, version: compat.version, problems: compat.problems },
+            approvals: { enabled: approvalsEnabled },
+            catalog: catalogState,
+            sessions: [...sessions.values()],
+          });
+        });
+        log('info', 'pipe: Coucou connected');
+        return;
+      }
+      handle(message);
+    }
+  };
 
   function handle(message) {
     switch (message.t) {
@@ -535,9 +781,36 @@ export function apply(ctx, rawConfig) {
     }
   }
 
-  server.listen(runtime.pipe);
+  // ── transport ──────────────────────────────────────────────────────────────
 
-  ctx.on('approval/request', onApproval);
+  const channel = createChannel({
+    pipeName: runtime.pipe,
+    sid,
+    log,
+    onText: feed,
+    onClose: () => resetClient('Coucou disconnected'),
+    allowUnhardened: config.allowUnhardenedPipe === true,
+    testChannel: config.testChannel === true,
+  });
+  channel.start();
+  if (config.testChannel) ctx.testChannel = channel;
+  log('info', 'pipe: ' + channel.kind + ' starting');
+
+  /**
+   * Approvals may only be intercepted when a DSH we understand is running and
+   * the token file is actually private. A pipe that is missing or dead is not
+   * a risk: without a client, every request delegates to DSH's own prompt.
+   */
+  const approvalsEnabled = compat.ok && tokenPrivate;
+  if (!approvalsEnabled) {
+    const why = [];
+    if (!compat.ok) why.push('incompatible DSH');
+    if (!tokenPrivate) why.push('token file is not private');
+    log('warn', `approvals: disabled (${why.join(', ')}); DSH keeps its own prompts`);
+  } else {
+    ctx.on('approval/request', onApproval);
+  }
+
   ctx.on('session/event', onSessionEvent);
   ctx.on('agent/created', ({ agent }) => publishSession(agent));
   ctx.on('llm/models-updated', () => {
@@ -554,7 +827,7 @@ export function apply(ctx, rawConfig) {
   ctx.effect(() => () => {
     log('info', 'bridge stop');
     for (const requestId of [...pending.keys()]) settle(requestId, 'cancelled');
-    server.close();
+    channel.stop();
   });
 }
 

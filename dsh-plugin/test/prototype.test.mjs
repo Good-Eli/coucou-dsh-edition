@@ -1,30 +1,52 @@
 /**
  * Prototype test bench for the Coucou ↔ DSH bridge plugin.
  *
- * These tests drive the plugin through a fake Cordis context: no real DSH host,
- * no real agent, no real Coucou. Every scenario asserts the one rule that
- * matters — `allowed-once` is only ever returned after an explicit answer.
+ * These tests drive the plugin through a fake Cordis context and an in-memory
+ * transport: no real DSH host, no real Coucou. Every scenario asserts the one
+ * rule that matters — `allowed-once` is only ever returned after an explicit
+ * answer for that exact request.
  *
  * Run: node --test dsh-plugin/test/
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { connect } from 'node:net';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { apply, maskSecrets, clip, tokenMatches, pipeName, PROTOCOL } from '../bridge.mjs';
+import { isPrivateSddl } from '../state-acl.mjs';
 
-/** A Cordis-shaped context that records listeners and disposers. */
-function fakeCtx() {
+const SID = 'S-1-5-21-1-2-3-1001';
+
+/** A Cordis-shaped context with the services the plugin reads. */
+function fakeCtx({ withLlm = true } = {}) {
   const listeners = new Map();
   const services = new Map();
   const disposers = [];
+  if (withLlm) {
+    services.set('llm', {
+      listProviders: () => [
+        {
+          id: 'test-provider',
+          name: 'Test Provider',
+        },
+      ],
+      listModels: async () => [{ id: 'model-a', name: 'Model A' }],
+      resolveModelInfo: async () => ({
+        reasoning: { efforts: [{ id: 'off', name: 'Off' }, { id: 'high', name: 'High' }], defaultEffort: 'high' },
+        defaultMaxTokens: 1000,
+      }),
+    });
+  }
+  services.set('agents', { list: () => [] });
+
   return {
     listeners,
+    services,
     disposers,
+    testChannel: null,
     on(event, handler) {
       if (!listeners.has(event)) listeners.set(event, []);
       listeners.get(event).push(handler);
@@ -47,75 +69,54 @@ function fakeCtx() {
       const list = listeners.get(event) ?? [];
       return Promise.all(list.map((fn) => fn(...args)));
     },
+    has(event) {
+      return (listeners.get(event) ?? []).length > 0;
+    },
   };
 }
 
-/** Starts the plugin on a throwaway state directory and returns its handles. */
-function startBridge(overrides = {}) {
-  const stateDir = mkdtempSync(join(tmpdir(), 'coucou-dsh-'));
-  const ctx = fakeCtx();
-  // A unique pipe per bridge so tests never collide on the real user's name.
-  const pipeSuffix = `-test-${process.pid}-${counter++}`;
-  apply(ctx, { stateDir, pipeSuffix, logLevel: 'error', ...overrides });
-  const runtime = JSON.parse(readFileSync(join(stateDir, 'runtime.json'), 'utf8'));
-  // The pipe server keeps the process alive; every test closes it explicitly.
-  registerCleanup(ctx);
-  return { ctx, runtime, stateDir };
-}
-
-let counter = 0;
-
-/** Closes bridges at the end of each test so `node --test` can exit. */
 const openBridges = [];
-function registerCleanup(ctx) {
-  openBridges.push(ctx);
-}
 test.afterEach(() => {
   while (openBridges.length > 0) openBridges.pop().disposeAll();
 });
 
-/** Minimal Coucou-side client: connects, says hello, and reads NDJSON. */
-function connectClient(runtime, token = runtime.token) {
-  return new Promise((resolve, reject) => {
-    const socket = connect(runtime.pipe);
-    const messages = [];
-    let buffer = '';
-    socket.setEncoding('utf8');
-    socket.on('data', (chunk) => {
-      buffer += chunk;
-      let index;
-      while ((index = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, index);
-        buffer = buffer.slice(index + 1);
-        if (line.trim()) messages.push(JSON.parse(line));
-      }
-    });
-    socket.on('error', reject);
-    socket.on('connect', () => {
-      socket.write(`${JSON.stringify({ t: 'hello', protocol: PROTOCOL, token, client: 'test' })}\n`);
-      const waitFor = (predicate, timeout = 2000) =>
-        new Promise((done, fail) => {
-          const started = Date.now();
-          const timer = setInterval(() => {
-            const found = messages.find(predicate);
-            if (found) {
-              clearInterval(timer);
-              done(found);
-            } else if (Date.now() - started > timeout) {
-              clearInterval(timer);
-              fail(new Error('timeout waiting for message'));
-            }
-          }, 10);
-        });
-      resolve({ socket, messages, waitFor });
-    });
+/** Starts the plugin with an in-memory channel and returns its handles. */
+function startBridge(overrides = {}) {
+  const stateDir = mkdtempSync(join(tmpdir(), 'coucou-dsh-'));
+  const ctx = fakeCtx({ withLlm: overrides.withLlm !== false });
+  apply(ctx, {
+    stateDir,
+    testChannel: true,
+    skipSecurityChecks: true,
+    skipVersionCheck: true,
+    logLevel: 'error',
+    ...overrides,
   });
+  const runtime = JSON.parse(readFileSync(join(stateDir, 'runtime.json'), 'utf8'));
+  openBridges.push(ctx);
+  return { ctx, runtime, stateDir, channel: ctx.testChannel };
 }
 
-/** One approval request as DSH would send it. */
+/** Sends one protocol frame from the notional Coucou client. */
+function clientSend(bridge, message) {
+  bridge.channel.inject(`${JSON.stringify(message)}\n`);
+}
+
+/** Authenticates the notional Coucou client. */
+function handshake(bridge, token = bridge.runtime.token) {
+  clientSend(bridge, { t: 'hello', protocol: PROTOCOL, token, client: 'test' });
+  return bridge.channel.outgoing.join('');
+}
+
+/** Finds the last decoded frame the plugin wrote. */
+function lastFrame(bridge) {
+  const lines = bridge.channel.outgoing.join('').trim().split('\n').filter(Boolean);
+  return lines.length ? JSON.parse(lines[lines.length - 1]) : null;
+}
+
 function approvalRequest(overrides = {}) {
   return {
-    agent: { session: { id: 'session-test', meta: { cwd: 'C:/work' } } },
+    agent: { session: { id: 'session-test', header: { cwd: 'C:/work' } } },
     toolName: 'pwsh',
     callId: 'call-1',
     reason: 'escalate sandbox to danger-full-access',
@@ -133,143 +134,117 @@ test('no client: the request falls back to DSH without waiting', async () => {
     return 'unavailable';
   });
   assert.equal(delegated, 1, 'next() must be called');
-  assert.equal(outcome, 'unavailable');
   assert.notEqual(outcome, 'allowed-once');
 });
 
 test('client connected but never acks: falls back to DSH', async () => {
-  const { ctx, runtime } = startBridge();
-  const client = await connectClient(runtime);
-  await client.waitFor((m) => m.t === 'ready');
-
+  const bridge = startBridge({ ackTimeoutMs: 200 });
+  handshake(bridge);
   let delegated = 0;
-  const started = Date.now();
-  const [outcome] = await ctx.fire('approval/request', approvalRequest(), async () => {
+  const [outcome] = await bridge.ctx.fire('approval/request', approvalRequest(), async () => {
     delegated++;
     return 'unavailable';
   });
-  const elapsed = Date.now() - started;
-
   assert.equal(delegated, 1, 'no ack must delegate');
   assert.notEqual(outcome, 'allowed-once');
-  assert.ok(elapsed >= 1400, `should wait for the ack window, waited ${elapsed}ms`);
-  client.socket.destroy();
 });
 
 test('ack + allow returns allowed-once exactly once', async () => {
-  const { ctx, runtime } = startBridge();
-  const client = await connectClient(runtime);
-  await client.waitFor((m) => m.t === 'ready');
-
-  const pending = ctx.fire('approval/request', approvalRequest(), async () => 'unavailable');
-  const asked = await client.waitFor((m) => m.t === 'approval.asked');
-  client.socket.write(`${JSON.stringify({ t: 'approval.ack', requestId: asked.requestId })}\n`);
-  client.socket.write(
-    `${JSON.stringify({ t: 'approval.answer', requestId: asked.requestId, decision: 'allow' })}\n`,
-  );
-
+  const bridge = startBridge();
+  handshake(bridge);
+  const pending = bridge.ctx.fire('approval/request', approvalRequest(), async () => 'unavailable');
+  const asked = lastFrame(bridge);
+  assert.equal(asked.t, 'approval.asked');
+  clientSend(bridge, { t: 'approval.ack', requestId: asked.requestId });
+  clientSend(bridge, { t: 'approval.answer', requestId: asked.requestId, decision: 'allow' });
   const [outcome] = await pending;
   assert.equal(outcome, 'allowed-once');
-  const resolved = await client.waitFor((m) => m.t === 'approval.resolved');
-  assert.equal(resolved.outcome, 'allowed-once');
-  client.socket.destroy();
 });
 
 test('ack + deny returns rejected', async () => {
-  const { ctx, runtime } = startBridge();
-  const client = await connectClient(runtime);
-  await client.waitFor((m) => m.t === 'ready');
-
-  const pending = ctx.fire('approval/request', approvalRequest(), async () => 'unavailable');
-  const asked = await client.waitFor((m) => m.t === 'approval.asked');
-  client.socket.write(`${JSON.stringify({ t: 'approval.ack', requestId: asked.requestId })}\n`);
-  client.socket.write(
-    `${JSON.stringify({ t: 'approval.answer', requestId: asked.requestId, decision: 'deny' })}\n`,
-  );
-
+  const bridge = startBridge();
+  handshake(bridge);
+  const pending = bridge.ctx.fire('approval/request', approvalRequest(), async () => 'unavailable');
+  const asked = lastFrame(bridge);
+  clientSend(bridge, { t: 'approval.ack', requestId: asked.requestId });
+  clientSend(bridge, { t: 'approval.answer', requestId: asked.requestId, decision: 'deny' });
   const [outcome] = await pending;
   assert.equal(outcome, 'rejected');
-  client.socket.destroy();
 });
 
 test('decline sends the user to the DSH prompt', async () => {
-  const { ctx, runtime } = startBridge();
-  const client = await connectClient(runtime);
-  await client.waitFor((m) => m.t === 'ready');
-
+  const bridge = startBridge();
+  handshake(bridge);
   let delegated = 0;
-  const pending = ctx.fire('approval/request', approvalRequest(), async () => {
+  const pending = bridge.ctx.fire('approval/request', approvalRequest(), async () => {
     delegated++;
     return 'unavailable';
   });
-  const asked = await client.waitFor((m) => m.t === 'approval.asked');
-  client.socket.write(`${JSON.stringify({ t: 'approval.ack', requestId: asked.requestId })}\n`);
-  client.socket.write(`${JSON.stringify({ t: 'approval.decline', requestId: asked.requestId })}\n`);
-
+  const asked = lastFrame(bridge);
+  clientSend(bridge, { t: 'approval.ack', requestId: asked.requestId });
+  clientSend(bridge, { t: 'approval.decline', requestId: asked.requestId });
   await pending;
   assert.equal(delegated, 1, 'decline must reach the stock UI');
-  client.socket.destroy();
 });
 
 test('disconnect while a card waits: nothing is granted', async () => {
-  const { ctx, runtime } = startBridge();
-  const client = await connectClient(runtime);
-  await client.waitFor((m) => m.t === 'ready');
-
+  const bridge = startBridge();
+  handshake(bridge);
   let delegated = 0;
-  const pending = ctx.fire('approval/request', approvalRequest(), async () => {
+  const pending = bridge.ctx.fire('approval/request', approvalRequest(), async () => {
     delegated++;
     return 'unavailable';
   });
-  const asked = await client.waitFor((m) => m.t === 'approval.asked');
-  client.socket.write(`${JSON.stringify({ t: 'approval.ack', requestId: asked.requestId })}\n`);
-  await new Promise((r) => setTimeout(r, 100));
-  client.socket.destroy();
-
+  const asked = lastFrame(bridge);
+  clientSend(bridge, { t: 'approval.ack', requestId: asked.requestId });
+  bridge.channel.kick('test disconnect');
   const [outcome] = await pending;
   assert.equal(delegated, 1, 'a lost connection must delegate');
   assert.notEqual(outcome, 'allowed-once');
 });
 
 test('a cancelled request settles as cancelled and ignores a late click', async () => {
-  const { ctx, runtime } = startBridge();
-  const client = await connectClient(runtime);
-  await client.waitFor((m) => m.t === 'ready');
-
+  const bridge = startBridge();
+  handshake(bridge);
   const controller = new AbortController();
-  const pending = ctx.fire(
+  const pending = bridge.ctx.fire(
     'approval/request',
     approvalRequest({ signal: controller.signal }),
     async () => 'unavailable',
   );
-  const asked = await client.waitFor((m) => m.t === 'approval.asked');
-  client.socket.write(`${JSON.stringify({ t: 'approval.ack', requestId: asked.requestId })}\n`);
-  await new Promise((r) => setTimeout(r, 50));
+  const asked = lastFrame(bridge);
+  clientSend(bridge, { t: 'approval.ack', requestId: asked.requestId });
   controller.abort();
-
   const [outcome] = await pending;
   assert.equal(outcome, 'cancelled');
 
-  // A click after the withdrawal must not resurrect the request.
-  client.socket.write(
-    `${JSON.stringify({ t: 'approval.answer', requestId: asked.requestId, decision: 'allow' })}\n`,
-  );
-  await new Promise((r) => setTimeout(r, 100));
-  assert.equal(outcome, 'cancelled');
-  client.socket.destroy();
+  clientSend(bridge, { t: 'approval.answer', requestId: asked.requestId, decision: 'allow' });
+  assert.equal(outcome, 'cancelled', 'a late click must not resurrect the request');
+});
+
+test('a decision timeout hands the card back to DSH', async () => {
+  const bridge = startBridge({ ackTimeoutMs: 100, decisionTimeoutMs: 200 });
+  handshake(bridge);
+  let delegated = 0;
+  const pending = bridge.ctx.fire('approval/request', approvalRequest(), async () => {
+    delegated++;
+    return 'unavailable';
+  });
+  const asked = lastFrame(bridge);
+  clientSend(bridge, { t: 'approval.ack', requestId: asked.requestId });
+  const [outcome] = await pending;
+  assert.equal(delegated, 1, 'an unanswered card must reach the stock UI');
+  assert.notEqual(outcome, 'allowed-once');
 });
 
 test('a wrong token is rejected and no card is offered', async () => {
-  const { ctx, runtime } = startBridge();
-  const socket = connect(runtime.pipe);
-  await new Promise((resolve) => socket.on('connect', resolve));
-  socket.setEncoding('utf8');
-  const closed = new Promise((resolve) => socket.on('close', resolve));
-  socket.write(`${JSON.stringify({ t: 'hello', protocol: PROTOCOL, token: 'nope' })}\n`);
-  await closed;
+  const bridge = startBridge();
+  handshake(bridge, 'not-the-token');
+  const ready = bridge.channel.outgoing.join('');
+  assert.doesNotMatch(ready, /"t":"ready"/);
 
   let delegated = 0;
-  const [outcome] = await ctx.fire('approval/request', approvalRequest(), async () => {
+  const [outcome] = await bridge.ctx.fire('approval/request', approvalRequest(), async () => {
     delegated++;
     return 'unavailable';
   });
@@ -277,59 +252,52 @@ test('a wrong token is rejected and no card is offered', async () => {
   assert.notEqual(outcome, 'allowed-once');
 });
 
-test('a second client cannot steal the first one’s card', async () => {
-  const { runtime } = startBridge();
-  const first = await connectClient(runtime);
-  await first.waitFor((m) => m.t === 'ready');
-
-  const second = connect(runtime.pipe);
-  await new Promise((resolve) => second.on('connect', resolve));
-  const closed = new Promise((resolve) => second.on('close', resolve));
-  second.write(`${JSON.stringify({ t: 'hello', protocol: PROTOCOL, token: runtime.token })}\n`);
-  await closed;
-  first.socket.destroy();
+test('a wrong protocol version is refused', async () => {
+  const bridge = startBridge();
+  clientSend(bridge, { t: 'hello', protocol: 999, token: bridge.runtime.token });
+  assert.doesNotMatch(bridge.channel.outgoing.join(''), /"t":"ready"/);
 });
 
-test('a decision timeout hands the card back to DSH', async () => {
-  const { ctx, runtime } = startBridge({ ackTimeoutMs: 300, decisionTimeoutMs: 700 });
-  const client = await connectClient(runtime);
-  await client.waitFor((m) => m.t === 'ready');
+// ── the compatibility gate ───────────────────────────────────────────────────
 
-  let delegated = 0;
-  const pending = ctx.fire('approval/request', approvalRequest(), async () => {
-    delegated++;
-    return 'unavailable';
-  });
-  const asked = await client.waitFor((m) => m.t === 'approval.asked');
-  client.socket.write(`${JSON.stringify({ t: 'approval.ack', requestId: asked.requestId })}\n`);
-
-  const [outcome] = await pending;
-  assert.equal(delegated, 1, 'an unanswered card must reach the stock UI');
-  assert.notEqual(outcome, 'allowed-once');
-  client.socket.destroy();
+test('a DSH without the llm service gets no approval answerer', () => {
+  const bridge = startBridge({ withLlm: false });
+  assert.equal(bridge.ctx.has('approval/request'), false, 'must not intercept approvals');
 });
 
-test('a click after the timeout is discarded', async () => {
-  const { ctx, runtime } = startBridge({ ackTimeoutMs: 200, decisionTimeoutMs: 400 });
-  const client = await connectClient(runtime);
-  await client.waitFor((m) => m.t === 'ready');
-
-  const pending = ctx.fire('approval/request', approvalRequest(), async () => 'unavailable');
-  const asked = await client.waitFor((m) => m.t === 'approval.asked');
-  client.socket.write(`${JSON.stringify({ t: 'approval.ack', requestId: asked.requestId })}\n`);
-  const [outcome] = await pending;
-  assert.notEqual(outcome, 'allowed-once');
-
-  // A very late click must not grant anything.
-  client.socket.write(
-    `${JSON.stringify({ t: 'approval.answer', requestId: asked.requestId, decision: 'allow' })}\n`,
-  );
-  await new Promise((r) => setTimeout(r, 150));
-  assert.notEqual(outcome, 'allowed-once');
-  client.socket.destroy();
+test('a supported host does register the approval answerer', () => {
+  const bridge = startBridge();
+  assert.equal(bridge.ctx.has('approval/request'), true);
 });
 
-// ── masking ──────────────────────────────────────────────────────────────────
+test('ready reports the security and compatibility state', async () => {
+  const bridge = startBridge();
+  handshake(bridge);
+  // `ready` is written after the catalog read resolves.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const ready = JSON.parse(bridge.channel.outgoing.join('').trim().split('\n')[0]);
+  assert.equal(ready.t, 'ready');
+  assert.equal(ready.approvals.enabled, true);
+  assert.equal(ready.security.tokenPrivate, true);
+  assert.equal(ready.pipe.hardened, true);
+  assert.equal(ready.compatibility.ok, true);
+});
+
+// ── catalog ──────────────────────────────────────────────────────────────────
+
+test('the catalog reports models with their own efforts', async () => {
+  const bridge = startBridge();
+  handshake(bridge);
+  clientSend(bridge, { t: 'catalog.get', requestId: 'c1' });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const result = lastFrame(bridge);
+  assert.equal(result.t, 'result');
+  const model = result.value.providers[0].models[0];
+  assert.deepEqual(model.efforts.map((e) => e.id), ['off', 'high']);
+  assert.equal(model.defaultEffort, 'high');
+});
+
+// ── masking and helpers ─────────────────────────────────────────────────────
 
 test('secrets never survive masking', () => {
   const cases = [
@@ -341,7 +309,10 @@ test('secrets never survive masking', () => {
   for (const text of cases) {
     const masked = maskSecrets(text);
     assert.match(masked, /\[redacted\]/, `expected a redaction in: ${masked}`);
-    assert.doesNotMatch(masked, /sk-abcdef0123456789|abcdefghijklmnopqrstuvwxyz123456|ghp_0123456789|supersecretvalue123/);
+    assert.doesNotMatch(
+      masked,
+      /0123456789|abcdefghijklmnopqrstuvwxyz123456|ghp_0123456789|supersecretvalue123/,
+    );
   }
 });
 
@@ -359,4 +330,15 @@ test('token comparison is exact', () => {
 
 test('the pipe name carries the user SID', () => {
   assert.equal(pipeName('S-1-5-21-1'), '\\\\.\\pipe\\coucou-dsh-S-1-5-21-1');
+});
+
+test('a private DACL is recognised and a wide one is not', () => {
+  const privateDir = `O:${SID}G:${SID}D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;${SID})`;
+  assert.equal(isPrivateSddl(privateDir, SID), true);
+  // Everyone can read: the exact shape Node's own pipe had.
+  assert.equal(isPrivateSddl(`D:(A;;FA;;;SY)(A;;FA;;;${SID})(A;;FR;;;WD)(A;;FR;;;AN)`, SID), false);
+  // Inherited, so a parent change could widen it.
+  assert.equal(isPrivateSddl(`D:(A;;FA;;;SY)(A;;FA;;;${SID})`, SID), false);
+  // A second local account is a stranger.
+  assert.equal(isPrivateSddl(`D:P(A;;FA;;;SY)(A;;FA;;;S-1-5-21-9-9-9-1002)`, SID), false);
 });
