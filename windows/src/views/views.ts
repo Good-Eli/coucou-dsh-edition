@@ -557,9 +557,10 @@ function buildApproval(actions: ViewActions): ViewHost {
   // How long DSH will keep the question open. Display only: reaching zero
   // answers nothing — the host hands the request to its own prompt.
   const countdown = h("span", { class: "approval-countdown" });
+  const cardNote = h("div", { class: "approval-note" });
   const row = h("div", { class: "actions" });
   const el = h("div", { class: "view" },
-    card("amber", stack(116, 16, who, code, files, row, countdown), foldButton(actions)));
+    card("amber", stack(116, 16, who, code, files, row, cardNote, countdown), foldButton(actions)));
   let rowKey = "";
   // The card pops up under a cursor that was busy with something else: a click
   // meant for the window underneath must not land on Allow. Clicks in the first
@@ -567,6 +568,7 @@ function buildApproval(actions: ViewActions): ViewHost {
   let shownFor: string | null = null;
   let shownAt = 0;
   let countdownTimer: number | null = null;
+  let drawnNote = "";
   const guarded = (d: "allow" | "deny") => () => {
     if (performance.now() - shownAt < CLICK_GUARD_MS) return;
     actions.decide(d);
@@ -611,6 +613,14 @@ function buildApproval(actions: ViewActions): ViewHost {
       // the whole of it stays in the tooltip.
       files.textContent = touched.join("  ·  ");
       files.title = touched.join("\n");
+      // "Open DSH" that could not raise a window says so here, and the request
+      // stays on the card rather than going somewhere invisible.
+      const note = State.pendingApproval?.note ?? "";
+      if (note !== drawnNote) {
+        drawnNote = note;
+        cardNote.textContent = note;
+        cardNote.style.display = note ? "" : "none";
+      }
       // The buttons are built once per kind of request. Rebuilding them between
       // a mouse-down and a mouse-up would swallow the click, and there is
       // nothing else to vary: "Always" is gone until the remembered-rules list

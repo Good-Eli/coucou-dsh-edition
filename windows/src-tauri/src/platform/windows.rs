@@ -585,6 +585,21 @@ fn focus_app(exe: &str) -> bool {
         .is_some_and(|(hwnd, _, _)| bring_forward(hwnd))
 }
 
+/// DeepSeek Harness's own window, brought to the front.
+///
+/// This is what "Open DSH" needs: the bridge can hand a question back to DSH,
+/// but nothing in that protocol can raise a window — the plugin runs inside the
+/// host and has no window of its own to show. Without this the request went back
+/// to an app the user could not see, which looked like the button doing nothing.
+///
+/// `dsh://open` would be the tidier route, but DSH handles it through Electron's
+/// `open-url`, which only fires on macOS; on Windows the protocol reaches the
+/// running instance as a second launch and its handler is not wired to it.
+/// Restoring the window ourselves works on both.
+pub fn open_dsh_window() -> bool {
+    focus_app("DeepSeek Harness.exe")
+}
+
 /// The Claude desktop app: brought forward when it runs (Claude Code's own
 /// `claude.exe` has no window of its own, so it is never the one picked),
 /// started from the Squirrel path or its registered MSIX protocol otherwise.

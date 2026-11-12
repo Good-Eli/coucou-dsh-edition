@@ -358,6 +358,15 @@ fn open_claude_desktop() -> bool {
     platform::open_claude_desktop()
 }
 
+/// The approval card's "Open DSH": brings DeepSeek Harness's window to the front.
+///
+/// False when no DSH window exists — the caller then says so instead of closing
+/// the card as if the question had been handed over to something the user can see.
+#[tauri::command]
+fn open_dsh_window() -> bool {
+    platform::open_dsh_window()
+}
+
 /// The file behind a live diff, if it may be handed to the editor: an existing
 /// regular file given by its full path. Anything else — a relative path, a
 /// folder, a path `code` could read as an option — goes no further.
@@ -940,6 +949,7 @@ pub fn run() {
             open_in_vscode,
             open_session,
             open_claude_desktop,
+            open_dsh_window,
             open_file_in_vscode,
             quit_app,
             hooks_status,

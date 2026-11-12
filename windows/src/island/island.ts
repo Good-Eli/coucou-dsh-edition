@@ -25,7 +25,7 @@ import { SeasonCache, parseOutfit } from "../mochi/wardrobe";
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { dominantPct, planColor } from "../core/plan";
-import { language, tl } from "../i18n/i18n";
+import { language, t, tl } from "../i18n/i18n";
 import { claudeCompactPillVisible, closePlanCard, openPlanColor, planCardOpen } from "../views/usage";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
@@ -266,11 +266,34 @@ export class Island {
       answerInTerminal: () => {
         const req = State.pendingApproval;
         if (!req) return;
-        Sound.play("blip");
         const route = routeFor(req, "open");
-        if (route?.kind === "dsh") void Bridge.dshApproval(req.requestId, route.decision);
-        else if (route?.kind === "hook-decline") void Bridge.approvalDecline(req.requestId);
-        this.closeApproval();
+        // DSH's own prompt is inside a window: hand the question back only once
+        // that window is actually in front of the user. Otherwise the request
+        // would go somewhere nobody can see, and the card would claim it was
+        // dealt with.
+        if (route?.kind === "dsh") {
+          void (async () => {
+            const raised = await Bridge.dshOpenWindow().catch(() => false);
+            if (!raised) {
+              // Keep the request, say why. Allow and Deny still work.
+              if (State.pendingApproval?.requestId === req.requestId) {
+                State.pendingApproval.note = t("DSH has no window to open");
+                State.notify();
+              }
+              void Bridge.log(`dsh open: no window for req=${req.requestId}`);
+              return;
+            }
+            Sound.play("blip");
+            void Bridge.dshApproval(req.requestId, "open");
+            this.closeApproval();
+          })();
+          return;
+        }
+        if (route?.kind === "hook-decline") {
+          Sound.play("blip");
+          void Bridge.approvalDecline(req.requestId);
+          this.closeApproval();
+        }
       },
       toggleSound: () => {
         State.settings.soundEnabled = !State.settings.soundEnabled;

@@ -342,6 +342,13 @@ pub fn find_on_path(stem: &str) -> Option<PathBuf> {
 /// The Claude desktop app on Linux: launched via its desktop entry
 /// (installed by Anthropic's official .deb package as claude-desktop.desktop),
 /// directly by executable, or via its registered claude:// scheme handler.
+
+/// DeepSeek Harness has no Linux window of its own in this build: the bridge is a
+/// Windows named pipe, so there is nothing to bring forward.
+pub fn open_dsh_window() -> bool {
+    false
+}
+
 pub fn open_claude_desktop() -> bool {
     open_claude_with(
         || {

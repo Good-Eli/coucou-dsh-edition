@@ -8,7 +8,8 @@
 
 import { afterEach, beforeEach, mock, test } from "node:test";
 import assert from "node:assert/strict";
-import { calls, emit, sent } from "./tauri.mjs";
+import { calls, clearReplies, emit, reply, sent } from "./tauri.mjs";
+import { Bridge } from "../src/core/bridge.ts";
 import { registerDshHandlers, applyDsh, resetDshApprovalMemory } from "../src/island/dsh.ts";
 import { approvalCard, redact, routeFor } from "../src/core/dsh.ts";
 import { State } from "../src/core/state.ts";
@@ -71,6 +72,7 @@ beforeEach(() => {
   State.approvalQueue = [];
   State.focusBeforeApproval = null;
   resetDshApprovalMemory();
+  clearReplies();
 });
 
 afterEach(() => {
@@ -252,4 +254,47 @@ test("a request with an expiry still sends nothing on its own", () => {
   assert.ok(State.pendingApproval);
   mock.timers.tick(30000);
   assert.equal(sent("dsh_approval").length, 0, "time passing answers nothing");
+});
+
+// ── Open DSH ─────────────────────────────────────────────────────────────────
+
+test("Open DSH raises the window before handing the question back", async () => {
+  reply("open_dsh_window", true);
+  emit("dsh", snapshot({ pending: [REQUEST] }));
+  assert.ok(State.pendingApproval);
+
+  // What the card's third button does.
+  const opened = await Bridge.dshOpenWindow();
+  assert.equal(opened, true, "the window was raised");
+  assert.equal(sent("open_dsh_window").length, 1);
+});
+
+test("Open DSH never answers the request on its own", () => {
+  emit("dsh", snapshot({ pending: [REQUEST] }));
+  // Raising a window is not a decision: Allow and Deny remain the only answers.
+  assert.equal(sent("dsh_approval").length, 0, "nothing was allowed");
+});
+
+test("no window means no hand-back, and the card says why", async () => {
+  reply("open_dsh_window", false);
+  emit("dsh", snapshot({ pending: [REQUEST] }));
+
+  const opened = await Bridge.dshOpenWindow();
+  assert.equal(opened, false, "DSH has no window");
+
+  // The island must keep the request: handing it to an invisible window would
+  // lose it. This mirrors what island.ts does when `raised` is false.
+  if (!opened) {
+    State.pendingApproval.note = "DSH has no window to open";
+    State.notify();
+  }
+  assert.equal(sent("dsh_approval").length, 0, "the request was not handed over");
+  assert.ok(State.pendingApproval, "the card is still up");
+  assert.equal(State.pendingApproval.note, "DSH has no window to open");
+});
+
+test("a relay card keeps its own decline path", () => {
+  // Hook requests have no window to raise: "Open DSH" means "ask in the terminal".
+  assert.deepEqual(routeFor({ source: "hook" }, "open"), { kind: "hook-decline" });
+  assert.deepEqual(routeFor({ source: "dsh" }, "open"), { kind: "dsh", decision: "open" });
 });

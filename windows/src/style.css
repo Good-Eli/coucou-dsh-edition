@@ -3722,3 +3722,10 @@ html[data-dir="rtl"] #views :is(.bubble, .reply .md-p, .reply .md-h, .reply .md-
 }
 
 .approval-countdown.soon { color: #F5A524; }
+
+/* "Open DSH" could not raise the window: say so, keep the request. */
+.approval-note {
+  font: 500 11px var(--ui);
+  color: #F5A524;
+  margin-top: -2px;
+}

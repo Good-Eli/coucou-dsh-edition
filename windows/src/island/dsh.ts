@@ -304,7 +304,7 @@ export function syncApprovals() {
 
     const session = sessionFor(snapshot, request.sessionId);
     const card = approvalCard(request, session);
-    const info = { ...card, source: "dsh" as const };
+    const info = { ...card, source: "dsh" as const, note: null };
 
     if (State.pendingApproval) {
       State.approvalQueue.push(info);

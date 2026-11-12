@@ -337,6 +337,11 @@ export const Bridge = {
     call<string>("dsh_set_config", { sessionId, configId, value }),
   /** Asks the host for a fresh catalog. */
   dshRefreshCatalog: () => call<void>("dsh_refresh_catalog"),
+  /**
+   * Brings DeepSeek Harness's window forward. False when it has no window —
+   * DSH not running, or started in a way that leaves nothing to raise.
+   */
+  dshOpenWindow: () => call<boolean>("open_dsh_window"),
 
   // ── Phone link (Coucou for Android) ───────────────────────────────────────
   phoneLinkStatus: () => call<PhoneLinkStatus>("phone_link_status"),
