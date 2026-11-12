@@ -3597,11 +3597,13 @@ html[data-dir="rtl"] #views :is(.bubble, .reply .md-p, .reply .md-h, .reply .md-
   background-color: rgba(255, 255, 255, 0.3);
 }
 
-/* DSH approval card: the files a request touches, one per line. */
+/* DSH approval card: the files a request touches, on one line. The card is the
+   island's own height, so the list truncates and the whole of it is in the
+   tooltip instead of pushing the buttons off the card. */
 .code.dsh-files {
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 76px;
-  overflow-y: auto;
   margin-top: -6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.86;
 }
