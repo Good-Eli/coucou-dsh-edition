@@ -13,6 +13,7 @@ import {
   QUESTION_PICKER_H,
   type BotEmoteName, type IslandMode, type IslandViewName,
 } from "../core/layout";
+import { cornerRadius, growsUp } from "../core/corners";
 import { Sound } from "../core/sound";
 import { DSH_PILL_ID as DSH_ID, routeFor } from "../core/dsh";
 import { chooseEffort, chooseModel } from "./dsh";
@@ -60,10 +61,6 @@ const DRAG_SETTLE_MS = 200;
 /** The modes anchored to the right-hand side of their edge. */
 const RIGHT_MODES = ["bottomRight", "taskbarRight", "topRight"];
 
-/** True when the panel grows upwards, so its rounded corners are the top ones. */
-function growsUp(mode: string): boolean {
-  return mode !== "topCenter" && mode !== "topLeft" && mode !== "topRight";
-}
 
 export class Island {
   readonly fsm = new IslandStateMachine();
@@ -961,9 +958,11 @@ export class Island {
       this.islandEl.style.right = right ? "0px" : "auto";
       this.islandEl.style.transform = "none";
     }
-    // Corners come from style.css, keyed on `place-up` / `place-down`: the
-    // radius has to follow the edge, and keeping it here as well meant two
-    // places to change and one of them always stale.
+    // The corners follow the edge the panel is docked to, and the animated
+    // radius still drives them: the corners that meet the edge are square, the
+    // free ones use the spring, and the free corner on the anchored side is
+    // larger so the left and right placements are not the same shape.
+    this.islandEl.style.borderRadius = cornerRadius(mode, this.radius.value);
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
     this.miniGrid.style.left = `${w - 40 - 14.5}px`;

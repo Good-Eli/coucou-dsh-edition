@@ -3738,13 +3738,13 @@ html[data-dir="rtl"] #views :is(.bubble, .reply .md-p, .reply .md-h, .reply .md-
    unfolds from the bottom edge. `place-down` is the top edge, which keeps the
    shape every Coucou before this one had. */
 
+/* The radii themselves are set inline from core/corners.ts, because they depend
+   on the edge and on the animated radius. Only the animation origin lives here. */
 body.place-up #island {
-  border-radius: 14px 14px 0 0;
   transform-origin: left bottom;
 }
 
 body.place-down #island {
-  border-radius: 0 0 14px 14px;
   transform-origin: center top;
 }
 
@@ -3780,4 +3780,3 @@ body.place-bottom-right #island,
 body.place-taskbar-right #island { transform-origin: right bottom; }
 body.place-top-left #island { transform-origin: left top; }
 body.place-top-right #island { transform-origin: right top; }
-body.place-custom #island { transform-origin: left top; }
