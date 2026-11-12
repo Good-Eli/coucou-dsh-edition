@@ -26,6 +26,8 @@ pub struct Settings {
     pub main_pill: String,
     /// "primary" = the main display, "cursor" = whichever display the mouse is on.
     pub screen: String,
+    /// The corner of that display the island grows from.
+    pub placement: IslandPlacement,
     pub autostart: bool,
     pub hooks_installed: bool,
     /// Claude model used by the chat. Changeable in the settings window.
@@ -117,6 +119,39 @@ pub struct Settings {
     pub closed_island: String,
 }
 
+/// Where the island sits on its display.
+///
+/// `screen` still picks the display; this picks the corner on it, so the two
+/// settings do not overlap. Offsets and custom coordinates are logical pixels
+/// measured from the work area of that display, which is what makes them
+/// survive a change of scale or resolution.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct IslandPlacement {
+    /// "bottomLeft" (default) | "bottomRight" | "custom" | "topCenter".
+    /// "topCenter" is what every Coucou before this one did, kept so the old
+    /// position is still reachable.
+    pub mode: String,
+    /// Gap from the anchored edge, in logical px.
+    pub offset_x: f64,
+    pub offset_y: f64,
+    /// Top-left corner in `custom` mode, in logical px from the work area.
+    pub custom_x: f64,
+    pub custom_y: f64,
+}
+
+impl Default for IslandPlacement {
+    fn default() -> Self {
+        IslandPlacement {
+            mode: "bottomLeft".into(),
+            offset_x: 24.0,
+            offset_y: 24.0,
+            custom_x: 0.0,
+            custom_y: 0.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DesktopMochiPref {
@@ -155,6 +190,7 @@ impl Default for Settings {
             ],
             main_pill: "integration_claude".into(),
             screen: "primary".into(),
+            placement: IslandPlacement::default(),
             autostart: false,
             hooks_installed: false,
             model: default_model(),
@@ -455,6 +491,7 @@ mod tests {
   "alertsFromAllPills": true,
   "absenceInterval": 60.0,
   "activeIntegrations": ["integration_notion"],
+  "placement": { "mode": "bottomRight", "offsetX": 40.0, "offsetY": 30.0, "customX": 11.0, "customY": 22.0 },
   "mainPill": "agent_cursor",
   "screen": "cursor",
   "autostart": true,
@@ -979,6 +1016,7 @@ mod tests {
                 "activeIntegrations",
                 "mainPill",
                 "screen",
+                "placement",
                 "autostart",
                 "hooksInstalled",
                 "model",

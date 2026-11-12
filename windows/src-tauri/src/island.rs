@@ -385,6 +385,168 @@ mod zoom_tests {
         assert_eq!(top_inset_from(0, -20), 0);
         assert_eq!(top_inset_from(0, 900), 0);
     }
+
+    // ── Placement ────────────────────────────────────────────────────────────
+
+    /// 1920×1040 work area at the origin: a 1080 display minus a 40 px taskbar.
+    fn work() -> Area {
+        Area { x: 0.0, y: 0.0, w: 1920.0, h: 1040.0 }
+    }
+
+    fn at(mode: PlacementMode, size: (f64, f64)) -> (f64, f64) {
+        placed_origin(&Placement { mode, ..Placement::default() }, size, work())
+    }
+
+    #[test]
+    fn the_default_is_the_bottom_left_corner() {
+        assert_eq!(Placement::default().mode, PlacementMode::BottomLeft);
+        // 24 px from the left edge, 24 px above the bottom of the work area.
+        assert_eq!(at(PlacementMode::BottomLeft, (720.0, 320.0)), (24.0, 1040.0 - 24.0 - 320.0));
+    }
+
+    #[test]
+    fn bottom_right_is_the_mirror_of_bottom_left() {
+        let (x, y) = at(PlacementMode::BottomRight, (720.0, 320.0));
+        assert_eq!(x, 1920.0 - 24.0 - 720.0);
+        assert_eq!(y, 1040.0 - 24.0 - 320.0);
+    }
+
+    #[test]
+    fn a_closed_island_stays_in_its_corner() {
+        // The closed island is smaller; placed by the same rule it stays glued
+        // to the same edges, which is what makes the growth look anchored.
+        let (x, y) = at(PlacementMode::BottomLeft, (160.0, 26.0));
+        assert_eq!(x, 24.0, "the left edge does not move");
+        assert_eq!(y, 1040.0 - 24.0 - 26.0, "the bottom edge does not move");
+        let (xr, _) = at(PlacementMode::BottomRight, (160.0, 26.0));
+        assert_eq!(xr, 1920.0 - 24.0 - 160.0, "the right edge does not move");
+    }
+
+    #[test]
+    fn custom_keeps_the_corner_the_user_dropped_it_at() {
+        let p = Placement {
+            mode: PlacementMode::Custom,
+            custom: (500.0, 260.0),
+            ..Placement::default()
+        };
+        assert_eq!(placed_origin(&p, (720.0, 320.0), work()), (500.0, 260.0));
+    }
+
+    #[test]
+    fn top_centre_is_what_coucou_always_did() {
+        assert_eq!(at(PlacementMode::TopCenter, (720.0, 320.0)), (600.0, 0.0));
+    }
+
+    #[test]
+    fn nothing_leaves_the_work_area() {
+        // A custom position past the edge is pulled back whole, not clipped.
+        let p = Placement {
+            mode: PlacementMode::Custom,
+            custom: (1900.0, 1030.0),
+            ..Placement::default()
+        };
+        assert_eq!(placed_origin(&p, (720.0, 320.0), work()), (1920.0 - 720.0, 1040.0 - 320.0));
+
+        // Negative works too.
+        let p = Placement {
+            mode: PlacementMode::Custom,
+            custom: (-500.0, -500.0),
+            ..Placement::default()
+        };
+        assert_eq!(placed_origin(&p, (720.0, 320.0), work()), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_window_bigger_than_the_display_sits_at_the_origin() {
+        let p = Placement { mode: PlacementMode::Custom, custom: (50.0, 50.0), ..Placement::default() };
+        assert_eq!(placed_origin(&p, (4000.0, 3000.0), work()), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_second_display_is_measured_from_its_own_work_area() {
+        // A monitor to the left of the primary one: negative coordinates are
+        // ordinary, not something to clamp away.
+        let left = Area { x: -1920.0, y: -200.0, w: 1920.0, h: 1040.0 };
+        let p = Placement::default();
+        assert_eq!(placed_origin(&p, (720.0, 320.0), left), (-1920.0 + 24.0, -200.0 + 1040.0 - 24.0 - 320.0));
+    }
+
+    #[test]
+    fn a_broken_setting_never_places_the_window_at_nan() {
+        let p = Placement {
+            mode: PlacementMode::Custom,
+            offset: (f64::NAN, f64::INFINITY),
+            custom: (f64::NAN, 100.0),
+        };
+        let (x, y) = placed_origin(&p, (720.0, 320.0), work());
+        assert!(x.is_finite() && y.is_finite(), "got {x},{y}");
+        assert_eq!(y, 100.0, "the coordinate that was fine is kept");
+    }
+
+    #[test]
+    fn an_unknown_mode_reads_as_the_default() {
+        assert_eq!(PlacementMode::parse("bottomLeft"), PlacementMode::BottomLeft);
+        assert_eq!(PlacementMode::parse("bottomRight"), PlacementMode::BottomRight);
+        assert_eq!(PlacementMode::parse("custom"), PlacementMode::Custom);
+        assert_eq!(PlacementMode::parse("topCenter"), PlacementMode::TopCenter);
+        // A typo in settings.json must not leave the island unplaced.
+        assert_eq!(PlacementMode::parse("bottomleft"), PlacementMode::BottomLeft);
+        assert_eq!(PlacementMode::parse(""), PlacementMode::BottomLeft);
+    }
+
+    // ── Snapping after a drag ────────────────────────────────────────────────
+
+    #[test]
+    fn a_drop_near_the_bottom_left_lands_in_the_bottom_left_corner() {
+        // Island dropped at 30 px from the left, 10 px above the bottom.
+        let p = snapped_placement((30.0, 1040.0 - 320.0 - 10.0, 720.0, 320.0), work());
+        assert_eq!(p.mode, PlacementMode::BottomLeft);
+        assert_eq!(p.offset, (30.0, 10.0));
+    }
+
+    #[test]
+    fn the_same_drop_on_the_other_half_lands_bottom_right() {
+        let x = 1920.0 - 720.0 - 30.0;
+        let p = snapped_placement((x, 1040.0 - 320.0 - 10.0, 720.0, 320.0), work());
+        assert_eq!(p.mode, PlacementMode::BottomRight);
+        // Close enough to the same gap, measured from the right edge instead.
+        assert!((p.offset.0 - 30.0).abs() < 0.001, "got {}", p.offset.0);
+        assert_eq!(p.offset.1, 10.0);
+    }
+
+    #[test]
+    fn a_drop_in_the_middle_of_the_screen_stays_where_it_was_put() {
+        let p = snapped_placement((600.0, 300.0, 720.0, 320.0), work());
+        assert_eq!(p.mode, PlacementMode::Custom);
+        assert_eq!(p.custom, (600.0, 300.0));
+    }
+
+    #[test]
+    fn a_drop_just_above_the_snap_zone_does_not_snap() {
+        // One pixel further up than the zone allows.
+        let y = 1040.0 - 320.0 - (SNAP_PX + 1.0);
+        assert_eq!(snapped_placement((30.0, y, 720.0, 320.0), work()).mode, PlacementMode::Custom);
+        // And inside it, it does.
+        let y = 1040.0 - 320.0 - SNAP_PX;
+        assert_eq!(snapped_placement((30.0, y, 720.0, 320.0), work()).mode, PlacementMode::BottomLeft);
+    }
+
+    #[test]
+    fn a_snap_round_trips_through_the_geometry() {
+        // What snapping stores is what placing reads back: drop the island,
+        // snap it, place it again, and it lands where it was dropped.
+        let dropped = (30.0, 1040.0 - 320.0 - 10.0, 720.0, 320.0);
+        let p = snapped_placement(dropped, work());
+        assert_eq!(placed_origin(&p, (dropped.2, dropped.3), work()), (dropped.0, dropped.1));
+    }
+
+    #[test]
+    fn snapping_never_writes_a_negative_offset() {
+        // Dragged past the left edge before letting go.
+        let p = snapped_placement((-40.0, 1040.0 - 320.0, 720.0, 320.0), work());
+        assert!(p.offset.0 >= 0.0, "got {}", p.offset.0);
+        assert!(p.offset.1 >= 0.0, "got {}", p.offset.1);
+    }
 }
 
 
@@ -425,19 +587,174 @@ fn top_inset_from(monitor_y: i32, work_y: i32) -> i32 {
     if (0..200).contains(&inset) { inset } else { 0 }
 }
 
-pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: Option<(f64, f64)>) {
+/// Where the island grows from: a corner of the work area, or the middle of its
+/// top edge (what every Coucou before this one did).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PlacementMode {
+    #[default]
+    BottomLeft,
+    BottomRight,
+    /// A free position, kept between launches.
+    Custom,
+    TopCenter,
+}
+
+impl PlacementMode {
+    /// Anything unknown reads as the default: `settings.json` is a file people
+    /// edit, and a typo should not leave the island unplaced.
+    pub fn parse(mode: &str) -> PlacementMode {
+        match mode {
+            "bottomRight" => PlacementMode::BottomRight,
+            "custom" => PlacementMode::Custom,
+            "topCenter" => PlacementMode::TopCenter,
+            _ => PlacementMode::BottomLeft,
+        }
+    }
+}
+
+/// A rectangle in logical pixels.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Area {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+impl Area {
+    pub fn right(&self) -> f64 {
+        self.x + self.w
+    }
+    pub fn bottom(&self) -> f64 {
+        self.y + self.h
+    }
+}
+
+/// What the user asked for, in the shape the geometry needs.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Placement {
+    pub mode: PlacementMode,
+    pub offset: (f64, f64),
+    pub custom: (f64, f64),
+}
+
+impl Default for Placement {
+    fn default() -> Self {
+        Placement {
+            mode: PlacementMode::default(),
+            offset: (24.0, 24.0),
+            custom: (0.0, 0.0),
+        }
+    }
+}
+
+/// The stored settings, in the shape the geometry reads.
+pub fn placement_of(p: &crate::settings::IslandPlacement) -> Placement {
+    Placement {
+        mode: PlacementMode::parse(&p.mode),
+        offset: (p.offset_x, p.offset_y),
+        custom: (p.custom_x, p.custom_y),
+    }
+}
+/// How close to the bottom of the work area counts as "put it in the corner".
+pub const SNAP_PX: f64 = 32.0;
+
+/// Where a drag left the island, expressed as a setting.
+///
+/// `window` is the island's top-left corner and size in logical pixels relative
+/// to the work area it was dropped on. Dropped near the bottom edge it snaps to
+/// one of the corners — left or right of the middle, whichever half it is in —
+/// and otherwise stays exactly where it was put.
+pub fn snapped_placement(window: (f64, f64, f64, f64), work: Area) -> Placement {
+    let (x, y, w, h) = window;
+    let (x, y, w, h) = (finite(x, 0.0), finite(y, 0.0), finite(w, 0.0), finite(h, 0.0));
+    let gap = work.h - (y + h);
+    if gap <= SNAP_PX {
+        // Closer to one corner than the other: the island's middle against the
+        // work area's middle.
+        let left = x + w / 2.0 < work.w / 2.0;
+        Placement {
+            mode: if left { PlacementMode::BottomLeft } else { PlacementMode::BottomRight },
+            offset: (
+                if left { x } else { work.w - x - w }.max(0.0),
+                gap.max(0.0),
+            ),
+            custom: (0.0, 0.0),
+        }
+    } else {
+        Placement {
+            mode: PlacementMode::Custom,
+            offset: (0.0, 0.0),
+            custom: (x.max(0.0), y.max(0.0)),
+        }
+    }
+}
+
+/// The window's top-left corner in logical pixels for a given mode.
+///
+/// A closed island is smaller than an open one and is placed by the same rule,
+/// so it keeps looking attached to its corner while it grows.
+pub fn placed_origin(p: &Placement, size: (f64, f64), wa: Area) -> (f64, f64) {
+    let (w, h) = (finite(size.0, 0.0), finite(size.1, 0.0));
+    let (ox, oy) = (finite(p.offset.0, 0.0), finite(p.offset.1, 0.0));
+    let (cx, cy) = (finite(p.custom.0, 0.0), finite(p.custom.1, 0.0));
+    let (x, y) = match p.mode {
+        // Grows up and to the right.
+        PlacementMode::BottomLeft => (wa.x + ox, wa.bottom() - oy - h),
+        // Grows up and to the left.
+        PlacementMode::BottomRight => (wa.right() - ox - w, wa.bottom() - oy - h),
+        // Grows down and to the right from where the user dropped it.
+        PlacementMode::Custom => (wa.x + cx, wa.y + cy),
+        // Grows down from the middle of the top edge.
+        PlacementMode::TopCenter => (wa.x + (wa.w - w) / 2.0, wa.y),
+    };
+    clamp_into_area(x, y, (w, h), wa)
+}
+
+/// Keeps the whole window on the display. A window larger than the work area
+/// sits at its origin rather than at a negative offset.
+fn clamp_into_area(x: f64, y: f64, size: (f64, f64), wa: Area) -> (f64, f64) {
+    let (w, h) = size;
+    let max_x = (wa.right() - w).max(wa.x);
+    let max_y = (wa.bottom() - h).max(wa.y);
+    (finite(x, wa.x).clamp(wa.x, max_x), finite(y, wa.y).clamp(wa.y, max_y))
+}
+
+/// NaN and infinity have no meaning as a position; fall back rather than pass
+/// them to `clamp`, which would keep them.
+fn finite(v: f64, fallback: f64) -> f64 {
+    if v.is_finite() {
+        v
+    } else {
+        fallback
+    }
+}
+
+pub fn apply_geometry(app: &AppHandle, pref: &str, placement: &Placement, collapsed: Option<(f64, f64)>) {
     let Some(win) = window(app) else { return };
     let Some(m) = target_monitor(app, pref) else { return };
 
     let scale = m.scale_factor();
-    let mp = *m.position();
     let ms = *m.size();
 
     let (lw, lh) = collapsed.map(clamp_collapsed).unwrap_or((PANEL_W, PANEL_H));
     let pw = (lw * scale).round().max(1.0) as u32;
     let ph = (lh * scale).round().max(1.0) as u32;
-    let x = mp.x + (ms.width as i32 - pw as i32) / 2;
-    let y = mp.y + top_inset(&m);
+
+    // The work area comes back in physical pixels; the stored position is
+    // logical, so both sides of the sum have to agree before it is used.
+    let wa = m.work_area();
+    let area = Area {
+        x: wa.position.x as f64 / scale,
+        y: wa.position.y as f64 / scale,
+        w: wa.size.width as f64 / scale,
+        h: wa.size.height as f64 / scale,
+    };
+    let (lx_pos, ly_pos) = placed_origin(placement, (lw, lh), area);
+    // The work area is already absolute in the virtual desktop, so the result
+    // needs no monitor offset — adding one would count it twice.
+    let x = (lx_pos * scale).round() as i32;
+    let y = (ly_pos * scale).round() as i32;
 
     // GTK never sizes a non-resizable window below its natural size (200 px
     // here), so on Linux the 6 px wake strip would stay a 200 px block. tao
@@ -448,6 +765,10 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: Option<(f64, f64)>
     let _ = win.set_resizable(true);
     let _ = win.set_size(PhysicalSize::new(pw, ph));
     let _ = win.set_position(PhysicalPosition::new(x, y));
+    crate::log::line(format!(
+        "island geometry: mode={:?} work={:.0},{:.0} {:.0}x{:.0} panel={lw:.0}x{lh:.0} at={x},{y} scale={scale}",
+        placement.mode, area.x, area.y, area.w, area.h
+    ));
     let (lx, ly) = logical_origin(&m);
     platform::pin_to_monitor(&win, lx, ly);
     // Moving across displays can rescale the window: re-assert the physical size.

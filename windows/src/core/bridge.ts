@@ -342,6 +342,16 @@ export const Bridge = {
    * DSH not running, or started in a way that leaves nothing to raise.
    */
   dshOpenWindow: () => call<boolean>("open_dsh_window"),
+  /**
+   * Where a drag left the island, decided and remembered by the host — only it
+   * knows the work area of the display it was dropped on.
+   */
+  snapIslandPlacement: () =>
+    call<{ mode: string; offsetX: number; offsetY: number; customX: number; customY: number }>(
+      "snap_island_placement",
+    ),
+  /** Re-applies the island's geometry from the current settings. */
+  repositionIsland: () => call<void>("reposition"),
 
   // ── Phone link (Coucou for Android) ───────────────────────────────────────
   phoneLinkStatus: () => call<PhoneLinkStatus>("phone_link_status"),

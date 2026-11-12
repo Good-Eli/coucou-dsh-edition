@@ -13,6 +13,7 @@ import {
   QUESTION_PICKER_H,
   type BotEmoteName, type IslandMode, type IslandViewName,
 } from "../core/layout";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sound } from "../core/sound";
 import { DSH_PILL_ID as DSH_ID, routeFor } from "../core/dsh";
 import { chooseEffort, chooseModel } from "./dsh";
@@ -53,6 +54,14 @@ const UPLOAD_VIEWS: ReadonlySet<IslandViewName> = new Set(["upload", "uploading"
 const PRE_PROGRESS = USC.T_PROG_START - USC.T_DROP;
 
 const modeOrder = (m: IslandMode) => (m === "hidden" ? 0 : m === "compact" ? 1 : 2);
+
+/** How long the island must stay still before a drag counts as finished. */
+const DRAG_SETTLE_MS = 200;
+
+/** True when the island hangs from the bottom of its display. */
+function isBottomMode(mode: string): boolean {
+  return mode === "bottomLeft" || mode === "bottomRight" || mode === "custom";
+}
 
 export class Island {
   readonly fsm = new IslandStateMachine();
@@ -427,6 +436,44 @@ export class Island {
 
     this.root.append(this.wakeStrip, this.islandEl);
     this.applyGeometry();
+    this.wireDrag();
+  }
+
+  /// Dragging the island moves it, and where it lands is remembered.
+  ///
+  /// The handle is the panel itself rather than Mochi, so the two drags do not
+  /// fight, and anything clickable is left alone: an approval card is a row of
+  /// buttons, and pulling the window out from under a click would lose it.
+  private wireDrag() {
+    if (!IS_TAURI) return;
+    let settle = 0;
+    // `onMoved` also fires when the host places the window itself, so only a
+    // real drag may write the setting back. Without this, every launch would
+    // overwrite the stored placement with wherever the window happened to be.
+    let dragging = false;
+    this.islandEl.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("button, a, input, textarea, select, canvas, [data-no-drag]")) return;
+      dragging = true;
+      void getCurrentWindow().startDragging();
+    });
+    // A native drag swallows pointerup, so the end of the drag is the last
+    // `onMoved` plus a pause. Saving on every move would rewrite settings.json
+    // dozens of times a second.
+    void getCurrentWindow().onMoved(() => {
+      if (!dragging) return;
+      window.clearTimeout(settle);
+      settle = window.setTimeout(() => {
+        dragging = false;
+        void Bridge.snapIslandPlacement()
+          .then((placed) => {
+            if (placed) State.settings.placement = placed;
+            return Bridge.repositionIsland();
+          })
+          .catch(() => undefined);
+      }, DRAG_SETTLE_MS);
+    });
   }
 
   // ── FSM ─────────────────────────────────────────────────────────────────────
@@ -830,14 +877,32 @@ export class Island {
     this.ensureRunning();
   }
 
+  /// Whether the panel grows upwards from the bottom of its display.
+  private get placeFromBottom() {
+    return isBottomMode(State.settings.placement?.mode ?? "");
+  }
+
+  /// One class on `body` says which edges the panel is anchored to, so the CSS
+  /// can mirror the shape without every rule asking about settings.
+  private syncPlacementClasses() {
+    const mode = State.settings.placement?.mode ?? "";
+    const body = document.body;
+    for (const name of ["bottom-left", "bottom-right", "custom", "top-center"]) {
+      body.classList.toggle(`place-${name}`, name === mode.replace(/([A-Z])/g, "-$1").toLowerCase());
+    }
+  }
+
   private applyGeometry() {
     const w = this.width.value;
     const hh = this.height.value;
     const r = this.radius.value;
     this.islandEl.style.width = `${w}px`;
     this.islandEl.style.height = `${hh}px`;
-    this.islandEl.style.borderRadius = `0 0 ${r}px ${r}px`;
-    this.islandEl.style.transform = `translateX(-50%)`;
+    this.syncPlacementClasses();
+    this.islandEl.style.borderRadius = this.placeFromBottom
+      ? `${r}px ${r}px 0 0`
+      : `0 0 ${r}px ${r}px`;
+    this.islandEl.style.transform = this.placeFromBottom ? "none" : `translateX(-50%)`;
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
     this.miniGrid.style.left = `${w - 40 - 14.5}px`;
@@ -847,7 +912,13 @@ export class Island {
     this.uploadCanvas.el.style.left = `${(w - EXPANDED_W) / 2}px`;
 
     const viewportW = window.innerWidth > 0 ? window.innerWidth : PANEL_W;
-    const rect = { x: (viewportW - w) / 2, y: 0, w, h: hh };
+    const viewportH = window.innerHeight > 0 ? window.innerHeight : 0;
+    // A panel anchored to the bottom of the window keeps its lower edge there;
+    // one anchored to the top starts at the top. The window is sized to the
+    // panel, so this only shows while the panel is still growing.
+    const originY = this.placeFromBottom ? Math.max(0, viewportH - hh) : 0;
+    const originX = this.placeFromBottom ? 0 : (viewportW - w) / 2;
+    const rect = { x: originX, y: originY, w, h: hh };
     const p = this.pushedRect;
     if (Math.abs(p.x - rect.x) > 0.5 || Math.abs(p.w - rect.w) > 0.5 || Math.abs(p.h - rect.h) > 0.5) {
       this.pushedRect = rect;

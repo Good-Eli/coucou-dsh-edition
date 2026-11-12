@@ -132,7 +132,7 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
     if screen_changed {
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
         let size = *shared.gate.collapsed_size.lock().unwrap();
-        island::apply_geometry(&app, &settings.screen, collapsed.then_some(size));
+        island::apply_geometry(&app, &settings.screen, &island::placement_of(&settings.placement), collapsed.then_some(size));
     }
     integrations::settings_saved(&app, &settings.active_integrations);
     spotify::sync(&app, &settings.active_integrations);
@@ -169,7 +169,10 @@ fn language_changed(app: &AppHandle) {
 /// cursor poll; anything else → full panel and 60 Hz polling.
 #[tauri::command]
 fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool, width: Option<f64>, height: Option<f64>) {
-    let pref = shared.settings.lock().unwrap().screen.clone();
+    let (pref, placement) = {
+        let s = shared.settings.lock().unwrap();
+        (s.screen.clone(), island::placement_of(&s.placement))
+    };
     shared.gate.collapsed.store(collapsed, Ordering::Relaxed);
     // An older page sends no size: the wake strip, as before.
     let size = island::clamp_collapsed((width.unwrap_or(island::STRIP_W), height.unwrap_or(island::STRIP_H)));
@@ -179,7 +182,7 @@ fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool, width: 
     if collapsed {
         shared.gate.set_active(false);
     }
-    island::apply_geometry(&app, &pref, collapsed.then_some(size));
+    island::apply_geometry(&app, &pref, &placement, collapsed.then_some(size));
     // The closed island must always take the mouse, and a resize invalidates the flag.
     island::refresh_click_through(&app, &shared.gate);
     shared.gate.set_active(!collapsed);
@@ -205,12 +208,97 @@ fn focus_window(app: AppHandle, focused: bool) {
     }
 }
 
+/// Reads where a drag left the island, decides whether it landed in a corner,
+/// and remembers the result.
+///
+/// The arithmetic stays here rather than in the page: only Rust has the work
+/// area of the display the island was dropped on, which is what the stored
+/// position is measured from.
+#[tauri::command]
+fn snap_island_placement(app: AppHandle, shared: State<Shared>) -> settings::IslandPlacement {
+    let Some(win) = island::window(&app) else {
+        return shared.settings.lock().unwrap().placement.clone();
+    };
+    let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+        return shared.settings.lock().unwrap().placement.clone();
+    };
+    let centre = (pos.x as f64 + size.width as f64 / 2.0, pos.y as f64 + size.height as f64 / 2.0);
+    // The display holding the island's middle is the one it was dropped on,
+    // even when it hangs over the edge of another.
+    let monitor = app
+        .available_monitors()
+        .ok()
+        .and_then(|ms| {
+            ms.into_iter().find(|m| {
+                let (p, s) = (m.position(), m.size());
+                centre.0 >= p.x as f64
+                    && centre.0 < p.x as f64 + s.width as f64
+                    && centre.1 >= p.y as f64
+                    && centre.1 < p.y as f64 + s.height as f64
+            })
+        })
+        .or_else(|| app.primary_monitor().ok().flatten());
+
+    let placement = match monitor {
+        Some(m) => {
+            let scale = m.scale_factor();
+            let wa = m.work_area();
+            let work = island::Area {
+                x: wa.position.x as f64 / scale,
+                y: wa.position.y as f64 / scale,
+                w: wa.size.width as f64 / scale,
+                h: wa.size.height as f64 / scale,
+            };
+            let window = (
+                (pos.x - wa.position.x) as f64 / scale,
+                (pos.y - wa.position.y) as f64 / scale,
+                size.width as f64 / scale,
+                size.height as f64 / scale,
+            );
+            let snapped = island::snapped_placement(window, work);
+            settings::IslandPlacement {
+                mode: match snapped.mode {
+                    island::PlacementMode::BottomLeft => "bottomLeft",
+                    island::PlacementMode::BottomRight => "bottomRight",
+                    island::PlacementMode::Custom => "custom",
+                    island::PlacementMode::TopCenter => "topCenter",
+                }
+                .into(),
+                offset_x: snapped.offset.0,
+                offset_y: snapped.offset.1,
+                custom_x: snapped.custom.0,
+                custom_y: snapped.custom.1,
+            }
+        }
+        None => return shared.settings.lock().unwrap().placement.clone(),
+    };
+
+    {
+        let mut current = shared.settings.lock().unwrap();
+        if current.placement == placement {
+            return placement;
+        }
+        current.placement = placement.clone();
+        if let Err(err) = settings::save(&current) {
+            log::line(format!("could not save placement: {err}"));
+        }
+    }
+    log::line(format!(
+        "island: placed {} at {:.0},{:.0}",
+        placement.mode, placement.offset_x.max(placement.custom_x), placement.offset_y.max(placement.custom_y)
+    ));
+    placement
+}
+
 #[tauri::command]
 fn reposition(app: AppHandle, shared: State<Shared>) {
-    let pref = shared.settings.lock().unwrap().screen.clone();
+    let (pref, placement) = {
+        let s = shared.settings.lock().unwrap();
+        (s.screen.clone(), island::placement_of(&s.placement))
+    };
     let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
     let size = *shared.gate.collapsed_size.lock().unwrap();
-    island::apply_geometry(&app, &pref, collapsed.then_some(size));
+    island::apply_geometry(&app, &pref, &placement, collapsed.then_some(size));
 }
 
 /// The panel is laid out in CSS px against the window's own scale. If the webview
@@ -939,6 +1027,7 @@ pub fn run() {
             set_island_rect,
             focus_window,
             reposition,
+            snap_island_placement,
             fit_zoom,
             hub_shown,
             list_monitors,
@@ -1126,7 +1215,7 @@ pub fn run() {
                 platform::make_non_activating(&win);
                 #[cfg(windows)]
                 webview_drop::install(&handle);
-                island::apply_geometry(&handle, &loaded.screen, None);
+                island::apply_geometry(&handle, &loaded.screen, &island::placement_of(&loaded.placement), None);
                 let _ = win.show();
             }
             gate.collapsed.store(false, Ordering::Relaxed);

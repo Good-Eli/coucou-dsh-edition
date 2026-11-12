@@ -135,6 +135,14 @@ export interface Settings {
   mainPill: string;
   /** "primary", "cursor", or `at:<x>,<y>` for one display (logical origin). */
   screen: string;
+  /** The corner of that display the island grows from. */
+  placement: {
+    mode: string;
+    offsetX: number;
+    offsetY: number;
+    customX: number;
+    customY: number;
+  };
   autostart: boolean;
   hooksInstalled: boolean;
   /** Claude model used by the chat. */
@@ -207,6 +215,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ],
   mainPill: DEFAULT_MAIN_PILL,
   screen: "primary",
+  placement: { mode: "bottomLeft", offsetX: 24, offsetY: 24, customX: 0, customY: 0 },
   autostart: false,
   hooksInstalled: false,
   model: "claude-opus-5",

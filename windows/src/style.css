@@ -3729,3 +3729,40 @@ html[data-dir="rtl"] #views :is(.bubble, .reply .md-p, .reply .md-h, .reply .md-
   color: #F5A524;
   margin-top: -2px;
 }
+
+/* ── Where the island hangs from ──────────────────────────────────────────
+   Set from settings.placement.mode (see Island.syncPlacementClasses). The
+   window itself is placed by apply_geometry; these rules keep the panel and
+   the wake strip inside it pointing the same way, and make the animations grow
+   from the corner the panel is anchored to instead of from the middle of the
+   screen. Nothing else about the panel changes. */
+
+body.place-bottom-left #island,
+body.place-bottom-right #island {
+  top: auto;
+  bottom: 0;
+  transform: none;
+}
+
+body.place-bottom-left #island { left: 0; }
+body.place-bottom-right #island { left: auto; right: 0; }
+
+body.place-bottom-left #wake-strip,
+body.place-bottom-right #wake-strip {
+  top: auto;
+  bottom: 0;
+  transform: none;
+}
+
+body.place-bottom-left #wake-strip { left: 0; }
+body.place-bottom-right #wake-strip { left: auto; right: 0; }
+
+body.place-custom #island,
+body.place-custom #wake-strip {
+  left: 0;
+  transform: none;
+}
+
+body.place-bottom-left #island { transform-origin: left bottom; }
+body.place-bottom-right #island { transform-origin: right bottom; }
+body.place-custom #island { transform-origin: left top; }
