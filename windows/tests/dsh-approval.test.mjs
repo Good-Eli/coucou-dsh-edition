@@ -236,3 +236,20 @@ test("the pill shows no model when DSH reported none", () => {
   const task = State.tasks.find((t) => t.id === "dsh");
   assert.equal(task.finalLine, null, "nothing is invented");
 });
+
+test("the card carries the time DSH will wait, and it is only shown", () => {
+  const card = approvalCard({ ...REQUEST, expiresAt: 1_700_000_060_000 }, SESSION);
+  assert.equal(card.expiresAt, 1_700_000_060_000, "passed through for the countdown");
+  // No expiry reported: nothing to count down.
+  assert.equal(approvalCard({ ...REQUEST, expiresAt: null }, SESSION).expiresAt, null);
+});
+
+test("a request with an expiry still sends nothing on its own", () => {
+  // The countdown is a label. Nothing in the island answers when it reaches
+  // zero — that is the host's decision, and the plugin hands the question to
+  // DSH's own prompt.
+  emit("dsh", snapshot({ pending: [{ ...REQUEST, expiresAt: Date.now() + 1000 }] }));
+  assert.ok(State.pendingApproval);
+  mock.timers.tick(30000);
+  assert.equal(sent("dsh_approval").length, 0, "time passing answers nothing");
+});

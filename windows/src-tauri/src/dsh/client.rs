@@ -54,8 +54,32 @@ impl Snapshot {
     }
 }
 
+/// What a `result` frame belongs to.
+#[derive(Debug, Clone)]
+pub(crate) enum RequestKind {
+    Catalog,
+    SetConfig { session_id: String },
+}
+
 /// Shared with the Tauri commands.
-pub struct Dsh(pub Mutex<Snapshot>, Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>);
+pub struct Dsh(
+    pub Mutex<Snapshot>,
+    Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
+    /// Requests sent to the host and not answered yet. Commands add to it, the
+    /// reader task resolves it, so a confirmed value can be told apart from a
+    /// value that was merely asked for.
+    Mutex<HashMap<String, RequestKind>>,
+);
+
+impl Dsh {
+    fn new() -> Self {
+        Self(
+            Mutex::new(Snapshot { status: "connecting".into(), ..Default::default() }),
+            Mutex::new(None),
+            Mutex::new(HashMap::new()),
+        )
+    }
+}
 
 pub fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
@@ -64,13 +88,43 @@ pub fn now_ms() -> i64 {
 /// Starts the client. It reconnects forever: DSH starting after Coucou, or
 /// restarting, is normal.
 pub fn start(app: AppHandle) {
-    app.manage(Dsh(Mutex::new(Snapshot { status: "connecting".into(), ..Default::default() }), Mutex::new(None)));
+    app.manage(Dsh::new());
     tauri::async_runtime::spawn(async move {
         loop {
             run_once(&app).await;
             tokio::time::sleep(RETRY_EVERY).await;
         }
     });
+}
+
+/// The answer to one command, for the view that asked.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigResult {
+    pub request_id: String,
+    pub ok: bool,
+    pub error: Option<String>,
+    /// The selection the host reports after the change, not the one we asked for.
+    pub selection: Option<Selection>,
+}
+
+fn answer_config(app: &AppHandle, result: ConfigResult) {
+    let _ = app.emit("dsh-config", result);
+}
+
+/// Fails every request still waiting, because the connection that would have
+/// answered them is gone. Nothing is reported as applied.
+fn fail_outstanding(app: &AppHandle, reason: &str) {
+    let Some(dsh) = app.try_state::<Dsh>() else { return };
+    let outstanding: Vec<String> = {
+        let mut guard = dsh.2.lock().unwrap_or_else(|e| e.into_inner());
+        let ids = guard.keys().cloned().collect();
+        guard.clear();
+        ids
+    };
+    for request_id in outstanding {
+        answer_config(app, ConfigResult { request_id, ok: false, error: Some(reason.to_string()), selection: None });
+    }
 }
 
 fn publish(app: &AppHandle, update: impl FnOnce(&mut Snapshot)) {
@@ -115,6 +169,9 @@ fn set_offline(app: &AppHandle, status: &str, error: impl Into<Option<String>>) 
     if let Some(dsh) = app.try_state::<Dsh>() {
         *dsh.1.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
+    // A command sent to a connection that has since died is not going to be
+    // answered, and it certainly did not take effect.
+    fail_outstanding(app, "the DSH bridge disconnected before answering");
 }
 
 /// One connection's lifetime.
@@ -168,7 +225,7 @@ async fn run_once(app: &AppHandle) {
     let mut ticker = tokio::time::interval(PING_EVERY);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_seen = tokio::time::Instant::now();
-    let mut requests: HashMap<String, RequestKind> = HashMap::new();
+
 
     loop {
         tokio::select! {
@@ -176,7 +233,7 @@ async fn run_once(app: &AppHandle) {
                 match frame {
                     Ok(Some(line)) => {
                         last_seen = tokio::time::Instant::now();
-                        if let Err(error) = absorb(app, &line, &mut requests) {
+                        if let Err(error) = absorb(app, &line) {
                             set_offline(app, "error", Some(error));
                             return;
                         }
@@ -211,12 +268,6 @@ async fn run_once(app: &AppHandle) {
     }
 }
 
-/// What a `result` frame belongs to.
-#[derive(Debug, Clone)]
-enum RequestKind {
-    Catalog,
-    SetConfig { session_id: String },
-}
 
 async fn handshake(app: &AppHandle, conn: &mut Conn, token: &str) -> Result<(), String> {
     let hello = serde_json::to_string(&protocol::Hello::new(token)).map_err(|e| e.to_string())?;
@@ -268,7 +319,7 @@ fn adopt(app: &AppHandle, ready: Ready) {
     });
 }
 
-fn absorb(app: &AppHandle, line: &str, requests: &mut HashMap<String, RequestKind>) -> Result<(), String> {
+fn absorb(app: &AppHandle, line: &str) -> Result<(), String> {
     let frame: Frame = serde_json::from_str(line).map_err(|err| format!("unreadable frame: {err}"))?;
     match frame {
         Frame::Ready(ready) => adopt(app, ready),
@@ -324,7 +375,10 @@ fn absorb(app: &AppHandle, line: &str, requests: &mut HashMap<String, RequestKin
         Frame::Pong { .. } => {}
 
         Frame::Result { request_id, ok, value, error } => {
-            match requests.remove(&request_id) {
+            let kind = app
+                .try_state::<Dsh>()
+                .and_then(|dsh| dsh.2.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id));
+            match kind {
                 Some(RequestKind::Catalog) => {
                     if ok {
                         if let Some(value) = value {
@@ -335,21 +389,26 @@ fn absorb(app: &AppHandle, line: &str, requests: &mut HashMap<String, RequestKin
                     }
                 }
                 Some(RequestKind::SetConfig { session_id }) => {
+                    let message = error.and_then(|e| e.message.or(e.code));
                     if ok {
-                        if let Some(value) = value {
-                            if let Ok(selection) = serde_json::from_value::<Selection>(value) {
-                                publish(app, |s| {
-                                    if let Some(session) = s.session_mut(&session_id) {
-                                        session.model = Some(selection);
-                                    }
-                                });
-                            }
+                        // The host answers with what it actually selected, read
+                        // back from its own state. Showing our request instead
+                        // would be a claim, not a fact.
+                        let selection = value.and_then(|value| serde_json::from_value::<Selection>(value).ok());
+                        if let Some(selection) = selection.clone() {
+                            publish(app, |s| {
+                                if let Some(session) = s.session_mut(&session_id) {
+                                    session.model = Some(selection);
+                                }
+                            });
                         }
+                        answer_config(app, ConfigResult { request_id, ok: true, error: None, selection });
                     } else {
-                        let message = error
-                            .and_then(|e| e.message.or(e.code))
-                            .unwrap_or_else(|| "the host refused the change".to_string());
-                        publish(app, |s| s.error = Some(message));
+                        let message = message.unwrap_or_else(|| "the host refused the change".to_string());
+                        answer_config(
+                            app,
+                            ConfigResult { request_id, ok: false, error: Some(message), selection: None },
+                        );
                     }
                 }
                 None => {}
@@ -445,26 +504,48 @@ pub fn dsh_approval(app: AppHandle, request_id: String, decision: String) -> Res
 #[tauri::command]
 pub fn dsh_refresh_catalog(app: AppHandle) -> Result<(), String> {
     let request_id = format!("catalog-{}", now_ms());
-    if queue(&app, protocol::catalog_get(&request_id)) {
-        Ok(())
-    } else {
-        Err("DSH is not connected".into())
+    // Registered before the frame leaves: the host can answer in the time it
+    // takes this function to reach the next line, and an unregistered answer is
+    // dropped as if it never came.
+    if let Some(dsh) = app.try_state::<Dsh>() {
+        dsh.2.lock().unwrap_or_else(|e| e.into_inner()).insert(request_id.clone(), RequestKind::Catalog);
     }
+    if !queue(&app, protocol::catalog_get(&request_id)) {
+        if let Some(dsh) = app.try_state::<Dsh>() {
+            dsh.2.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id);
+        }
+        return Err("DSH is not connected".into());
+    }
+    Ok(())
 }
 
 /// Changes the model or the reasoning effort of one session.
 ///
-/// Never a global default: the plugin applies it to that session only.
+/// Never a global default: the plugin applies it to that session only. The
+/// returned id names the request, whose answer arrives as a `dsh-config` event
+/// carrying what the host actually selected — not what we asked for.
 #[tauri::command]
-pub fn dsh_set_config(app: AppHandle, session_id: String, config_id: String, value: String) -> Result<(), String> {
+pub fn dsh_set_config(app: AppHandle, session_id: String, config_id: String, value: String) -> Result<String, String> {
     let request_id = format!("cfg-{}", now_ms());
-    let frame = protocol::set_config(&request_id, &session_id, &config_id, &value);
-    if queue(&app, frame) {
-        Ok(())
-    } else {
-        Err("DSH is not connected".into())
+    // Registered before the frame leaves: the host answers within the same
+    // millisecond, and an answer to a request the registry does not know is
+    // dropped — which would look like a timeout that never happened.
+    if let Some(dsh) = app.try_state::<Dsh>() {
+        dsh.2
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(request_id.clone(), RequestKind::SetConfig { session_id: session_id.clone() });
     }
+    let frame = protocol::set_config(&request_id, &session_id, &config_id, &value);
+    if !queue(&app, frame) {
+        if let Some(dsh) = app.try_state::<Dsh>() {
+            dsh.2.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id);
+        }
+        return Err("DSH is not connected".into());
+    }
+    Ok(request_id)
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -56,6 +56,11 @@ export interface ApprovalInfo {
   source?: "hook" | "dsh";
   /** Files the request touches, already trimmed for display. */
   files?: string[];
+  /**
+   * When DSH gives up on this request (ms since the epoch). Shown as a
+   * countdown; reaching zero answers nothing — the host decides.
+   */
+  expiresAt?: number | null;
   /** Set when Claude Code is asking a question rather than for a permission. */
   questions?: AskedQuestion[];
 }

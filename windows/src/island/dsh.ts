@@ -12,7 +12,10 @@ import {
   DSH_PILL_ID,
   Dsh,
   activeSession,
+  appliesToNextRequest,
   approvalCard,
+  isKnownEffort,
+  isKnownModel,
   islandState,
   isLive,
   modelLabel,
@@ -24,6 +27,156 @@ import { pillDefinition } from "../core/pills";
 import { State } from "../core/state";
 import { dropPendingCard } from "./hooks";
 import type { Island } from "./island";
+// ── Model and effort switching ───────────────────────────────────────────────
+
+/** What the host answered to one `session.setConfig`. */
+export interface ConfigResult {
+  requestId: string;
+  ok: boolean;
+  error?: string | null;
+  selection?: { provider: string; model: string; reasoningEffort?: string | null } | null;
+}
+
+/**
+ * The state of the last change the user asked for.
+ *
+ * `note` says a change applies to the next request, never to the one already
+ * running: DSH records a selection and sends it with the next request.
+ */
+export const DshConfig = {
+  pending: false,
+  requestId: null as string | null,
+  error: null as string | null,
+  /** Set when a change was accepted while a turn was running. */
+  appliesNext: false,
+  /** Cleared as soon as the next turn starts, when the change is in effect. */
+  sessionId: null as string | null,
+};
+
+/** How long to wait for the host to answer a change before calling it failed. */
+const CONFIG_TIMEOUT_MS = 6000;
+let configTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * An answer that arrived before the command returned its id.
+ *
+ * The host can reply in the same millisecond it is asked, so the event can
+ * reach the page before `dsh_set_config` has resolved. Dropping it would turn a
+ * successful change into a false timeout.
+ */
+let earlyResult: ConfigResult | null = null;
+
+function clearConfigTimer() {
+  if (configTimer) clearTimeout(configTimer);
+  configTimer = null;
+}
+
+function resetConfig() {
+  clearConfigTimer();
+  earlyResult = null;
+  DshConfig.pending = false;
+  DshConfig.requestId = null;
+  DshConfig.sessionId = null;
+}
+
+/** A change was accepted: nothing is claimed until the host confirms it. */
+function settleConfig(result: ConfigResult) {
+  if (!DshConfig.requestId) {
+    // Not yet known which request this belongs to: hold it until it is.
+    if (DshConfig.pending) earlyResult = result;
+    return;
+  }
+  if (result.requestId !== DshConfig.requestId) return;
+  resetConfig();
+  if (!result.ok) {
+    DshConfig.error = result.error || "DSH refused the change";
+    State.notify();
+    return;
+  }
+  // The snapshot carries the value the host read back; there is nothing to
+  // assert here beyond clearing the error.
+  DshConfig.error = null;
+  State.notify();
+}
+
+function startConfig(sessionId: string, appliesNext: boolean): string | null {
+  const snapshot = Dsh.snapshot;
+  if (!snapshot || !isLive(snapshot)) {
+    DshConfig.error = "DSH is not connected";
+    State.notify();
+    return null;
+  }
+  resetConfig();
+  DshConfig.error = null;
+  DshConfig.pending = true;
+  DshConfig.appliesNext = appliesNext;
+  DshConfig.sessionId = sessionId;
+  return sessionId;
+}
+
+/**
+ * Switches one session to another model.
+ *
+ * The model has to be in the catalog DSH published: sending a name it never
+ * mentioned would leave the session pointing at a route that cannot resolve.
+ */
+export function chooseModel(sessionId: string, provider: string, model: string) {
+  const snapshot = Dsh.snapshot;
+  if (!isKnownModel(snapshot?.catalog, provider, model)) {
+    DshConfig.error = `unknown model: ${provider}/${model}`;
+    State.notify();
+    return;
+  }
+  const session = sessionFor(snapshot, sessionId);
+  if (!startConfig(sessionId, appliesToNextRequest(session))) return;
+  void sendConfig(sessionId, "model", `${provider}/${model}`);
+}
+
+/** Switches the effort of one session, among the ones its model supports. */
+export function chooseEffort(sessionId: string, effort: string) {
+  const snapshot = Dsh.snapshot;
+  const session = sessionFor(snapshot, sessionId);
+  if (!isKnownEffort(snapshot?.catalog, session?.model, effort)) {
+    DshConfig.error = `unknown reasoning effort: ${effort || "(default)"}`;
+    State.notify();
+    return;
+  }
+  if (!startConfig(sessionId, appliesToNextRequest(session))) return;
+  void sendConfig(sessionId, "reasoning_effort", effort);
+}
+
+async function sendConfig(sessionId: string, configId: "model" | "reasoning_effort", value: string) {
+  try {
+    const requestId = await Bridge.dshSetConfig(sessionId, configId, value);
+    // The answer may have arrived before the command returned.
+    if (!DshConfig.pending) return;
+    DshConfig.requestId = requestId;
+    if (earlyResult && earlyResult.requestId === requestId) {
+      const held = earlyResult;
+      earlyResult = null;
+      settleConfig(held);
+      return;
+    }
+    earlyResult = null;
+    clearConfigTimer();
+    configTimer = setTimeout(() => {
+      if (!DshConfig.pending) return;
+      resetConfig();
+      DshConfig.error = "DSH did not answer; nothing was changed";
+      State.notify();
+    }, CONFIG_TIMEOUT_MS);
+  } catch (error) {
+    resetConfig();
+    DshConfig.error = String((error as Error)?.message ?? error);
+    State.notify();
+  }
+}
+
+/** Forgets a reported error once the user has seen it. */
+export function clearConfigError() {
+  if (!DshConfig.error) return;
+  DshConfig.error = null;
+  State.notify();
+}
 
 /**
  * The island puts the card up, exactly as it does for a hook request, and takes
@@ -41,6 +194,7 @@ export function resetDshApprovalMemory() {
 export function registerDshHandlers(island: Island) {
   host = island;
   void onEvent<DshSnapshot>("dsh", (snapshot) => applyDsh(snapshot));
+  void onEvent<ConfigResult>("dsh-config", (result) => settleConfig(result));
 }
 
 /** A report from Rust: the whole truth about DSH right now. */
@@ -49,6 +203,19 @@ export function applyDsh(snapshot: DshSnapshot) {
   syncTask();
   syncApprovals();
   State.notify();
+}
+
+/**
+ * Puts the DSH pill back after the task list was rebuilt from the settings.
+ *
+ * `loadIntegrationTasks` keeps only the pills the user declared, and DSH is not
+ * one of them: it appears because the bridge is live, not because it was
+ * checked in Settings. Without this the pill would vanish on the next settings
+ * load and stay gone until DSH happened to send something.
+ */
+export function refreshDsh() {
+  if (!Dsh.snapshot) return;
+  syncTask();
 }
 
 /**

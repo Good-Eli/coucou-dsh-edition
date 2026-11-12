@@ -14,7 +14,8 @@ import {
   type BotEmoteName, type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { Sound } from "../core/sound";
-import { routeFor } from "../core/dsh";
+import { DSH_PILL_ID as DSH_ID, routeFor } from "../core/dsh";
+import { chooseEffort, chooseModel } from "./dsh";
 import { State } from "../core/state";
 import { SPOTIFY_ID, Spotify, islandDances } from "../core/spotify";
 import { BotEngine, hexToRGB } from "../mochi/engine";
@@ -228,7 +229,12 @@ export class Island {
           // No WhatsApp app to bring forward here as on the Mac: WhatsApp Web, in the browser.
           integration_whatsapp: "https://web.whatsapp.com",
         };
-        if (task.id === CLAUDE_DESKTOP_ID) void Bridge.openClaudeDesktop();
+        // DSH has no window of its own to bring forward: the ↗ opens what it
+        // can change instead.
+        if (task.id === DSH_ID) {
+          this.setView("model");
+          void Bridge.dshRefreshCatalog();
+        } else if (task.id === CLAUDE_DESKTOP_ID) void Bridge.openClaudeDesktop();
         else if (task.id === "integration_claude" || task.sessionId) {
           void Bridge.openSession(task.sessionId ?? null, task.sessionCwd ?? null);
         } else if (task.id === "integration_n8n") void Bridge.openN8n();
@@ -303,6 +309,12 @@ export class Island {
         if (on) void Bridge.focusWindow(true);
         else if (State.view !== "prompt" && State.mode === "expanded") void Bridge.focusWindow(false);
       },
+      openModelPicker: () => {
+        this.setView("model");
+        void Bridge.dshRefreshCatalog();
+      },
+      chooseDshModel: (sessionId, provider, model) => chooseModel(sessionId, provider, model),
+      chooseDshEffort: (sessionId, effort) => chooseEffort(sessionId, effort),
       holdOpen: (on) => {
         if (this.holdingOpen === on) return;
         this.holdingOpen = on;

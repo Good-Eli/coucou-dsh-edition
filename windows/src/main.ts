@@ -12,7 +12,7 @@ import { registerShortcutHandlers } from "./island/shortcuts";
 import { registerVoiceHandlers } from "./island/voice";
 import { applySpotify, registerSpotifyHandlers } from "./island/spotify";
 import { registerWhatsAppHandlers } from "./island/whatsapp";
-import { registerDshHandlers } from "./island/dsh";
+import { refreshDsh, registerDshHandlers } from "./island/dsh";
 import { SPOTIFY_ID } from "./core/spotify";
 import { Recap } from "./recap/recap";
 import { Updates } from "./island/update";
@@ -59,6 +59,8 @@ async function main() {
   void Bridge.setSystemLanguages(systemLanguages());
   island.applySettings();
   State.loadIntegrationTasks();
+  // DSH is not a declared pill: the rebuild above drops it, so it goes back.
+  refreshDsh();
   if (boot && !boot.cursorPoll) island.followPageCursor();
   await island.desktop.init();
 
@@ -154,6 +156,8 @@ async function main() {
     applyLanguage();
     island.applySettings();
     State.loadIntegrationTasks();
+    // DSH is not a declared pill: the rebuild above drops it, so it goes back.
+    refreshDsh();
     // A new main tool comes to the front, as on macOS.
     if (State.mainPillId !== previousMain) State.setFocus(State.mainPillId);
     void refreshConfigured();

@@ -21,6 +21,7 @@ import { lastTextStep } from "../core/diff";
 import { Bridge } from "../core/bridge";
 import { buildRecap } from "./recap";
 import { buildWardrobe } from "./wardrobe";
+import { buildModel } from "./model";
 import { buildUpdate } from "./update";
 import { buildWhatsNew } from "./whatsnew";
 import { buildSpotifyCard, buildSpotifyPill, type SpotifyPillHost } from "./spotify";
@@ -63,6 +64,12 @@ export interface ViewActions {
   keyboard(on: boolean): void;
   /** Something is being typed in a card: the island stays open until it is sent or cleared. */
   holdOpen(on: boolean): void;
+  /** Opens the model picker for the DSH session on screen. */
+  openModelPicker(): void;
+  /** Switches one DSH session to another model of the catalog. */
+  chooseDshModel(sessionId: string, provider: string, model: string): void;
+  /** Switches the reasoning effort of one DSH session. */
+  chooseDshEffort(sessionId: string, effort: string): void;
 }
 
 export interface ViewHost {
@@ -547,15 +554,19 @@ function buildApproval(actions: ViewActions): ViewHost {
   // The files a request touches, one per line. Empty (and hidden) for the
   // relay's cards, which show everything in the single code line.
   const files = h("div", { class: "code dsh-files" });
+  // How long DSH will keep the question open. Display only: reaching zero
+  // answers nothing — the host hands the request to its own prompt.
+  const countdown = h("span", { class: "approval-countdown" });
   const row = h("div", { class: "actions" });
   const el = h("div", { class: "view" },
-    card("amber", stack(116, 16, who, code, files, row), foldButton(actions)));
+    card("amber", stack(116, 16, who, code, files, row, countdown), foldButton(actions)));
   let rowKey = "";
   // The card pops up under a cursor that was busy with something else: a click
   // meant for the window underneath must not land on Allow. Clicks in the first
   // moments after a new request appears are ignored.
   let shownFor: string | null = null;
   let shownAt = 0;
+  let countdownTimer: number | null = null;
   const guarded = (d: "allow" | "deny") => () => {
     if (performance.now() - shownAt < CLICK_GUARD_MS) return;
     actions.decide(d);
@@ -564,6 +575,18 @@ function buildApproval(actions: ViewActions): ViewHost {
     if (performance.now() - shownAt < CLICK_GUARD_MS) return;
     actions.answerInTerminal();
   };
+  /** Redraws the remaining time. It never answers anything. */
+  const tickCountdown = () => {
+    const expiresAt = State.pendingApproval?.expiresAt ?? null;
+    if (!expiresAt) {
+      countdown.style.display = "none";
+      return;
+    }
+    countdown.style.display = "";
+    const left = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
+    countdown.textContent = left > 0 ? `${left}s` : "";
+    countdown.classList.toggle("soon", left <= 10);
+  };
   return {
     el,
     sync() {
@@ -571,7 +594,11 @@ function buildApproval(actions: ViewActions): ViewHost {
       if (req !== shownFor) {
         shownFor = req;
         shownAt = performance.now();
+        // One timer per card, not one per sync: sync runs on every notify.
+        if (countdownTimer !== null) clearInterval(countdownTimer);
+        countdownTimer = req ? window.setInterval(tickCountdown, 1000) : null;
       }
+      tickCountdown();
       clear(who);
       who.append(agentWho(State.focusTask, t("needs permission")));
       // The whole point of approving here rather than in the terminal: this line
@@ -580,7 +607,10 @@ function buildApproval(actions: ViewActions): ViewHost {
       code.textContent = State.pendingApproval?.command || State.pendingApproval?.tool || "…";
       const touched = State.pendingApproval?.files ?? [];
       files.style.display = touched.length ? "" : "none";
-      files.textContent = touched.join("\n");
+      // One line: the card is the island's height, so the list truncates and
+      // the whole of it stays in the tooltip.
+      files.textContent = touched.join("  ·  ");
+      files.title = touched.join("\n");
       // The buttons are built once per kind of request. Rebuilding them between
       // a mouse-down and a mouse-up would swallow the click, and there is
       // nothing else to vary: "Always" is gone until the remembered-rules list
@@ -877,6 +907,7 @@ export function buildViews(
   map.set("choose", buildChoose(actions));
   map.set("recap", buildRecap(actions));
   map.set("wardrobe", buildWardrobe(actions));
+  map.set("model", buildModel(actions));
   map.set("update", buildUpdate());
   map.set("whatsNew", buildWhatsNew());
   // Not in the Windows v1: sending a file by email, window attach + web result.

@@ -328,6 +328,16 @@ export const Bridge = {
   /** "The card is up" — DSH hands the question back if this never arrives. */
   dshApprovalAck: (requestId: string) => call<void>("dsh_approval_ack", { requestId }),
 
+  /**
+   * Changes the model or the effort of one session. Returns the id of the
+   * request; the answer arrives as a `dsh-config` event carrying what the host
+   * actually selected.
+   */
+  dshSetConfig: (sessionId: string, configId: "model" | "reasoning_effort", value: string) =>
+    call<string>("dsh_set_config", { sessionId, configId, value }),
+  /** Asks the host for a fresh catalog. */
+  dshRefreshCatalog: () => call<void>("dsh_refresh_catalog"),
+
   // ── Phone link (Coucou for Android) ───────────────────────────────────────
   phoneLinkStatus: () => call<PhoneLinkStatus>("phone_link_status"),
   /** Only ever from the switch in Settings. Throws with the reason if it cannot start. */

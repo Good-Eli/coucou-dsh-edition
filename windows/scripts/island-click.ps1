@@ -10,10 +10,30 @@
 param(
   [string]$Name,
   [switch]$List,
+  # Clicks the element with this accessible name where it actually is on
+  # screen. For things that are not buttons (a pill), where a click has to
+  # land on the element's own rectangle rather than be invoked.
+  [string]$ClickText,
   [string]$Exe = 'C:\LocalAI\build\coucou-dsh\windows\target\release\coucou.exe'
 )
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class IslandMouse {
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, IntPtr e);
+  public static void Click(int x, int y) {
+    SetCursorPos(x, y);
+    System.Threading.Thread.Sleep(120);
+    mouse_event(0x0002, 0, 0, 0, IntPtr.Zero);
+    System.Threading.Thread.Sleep(60);
+    mouse_event(0x0004, 0, 0, 0, IntPtr.Zero);
+  }
+}
+"@
 
 Add-Type -TypeDefinition @"
 using System;
@@ -56,6 +76,20 @@ if ($handles.Count -eq 0) { Write-Error "no island window for pid $($proc.Id)"; 
 foreach ($handle in $handles) {
   $root = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
   if (-not $root) { continue }
+
+  if ($ClickText) {
+    $condition = New-Object System.Windows.Automation.PropertyCondition(
+      [System.Windows.Automation.AutomationElement]::NameProperty, $ClickText)
+    $target = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    if (-not $target) { continue }
+    $rect = $target.Current.BoundingRectangle
+    if ($rect.Width -le 0 -or $rect.Height -le 0) { continue }
+    $x = [int]($rect.X + $rect.Width / 2)
+    $y = [int]($rect.Y + $rect.Height / 2)
+    [IslandMouse]::Click($x, $y)
+    Write-Output "clicked: $ClickText at $x,$y"
+    exit 0
+  }
   $condition = New-Object System.Windows.Automation.PropertyCondition(
     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
     [System.Windows.Automation.ControlType]::Button)
@@ -78,4 +112,5 @@ foreach ($handle in $handles) {
   exit 0
 }
 
+if ($ClickText) { Write-Error "no element named '$ClickText'"; exit 1 }
 if (-not $List) { Write-Error "no button named '$Name'"; exit 1 }

@@ -196,6 +196,7 @@ export function approvalCard(request: DshApproval, session: DshSession | null): 
   tool: string;
   command: string;
   files: string[];
+  expiresAt: number | null;
 } {
   const command = request.command ? redact(request.command) : "";
   return {
@@ -206,7 +207,106 @@ export function approvalCard(request: DshApproval, session: DshSession | null): 
     // The card's one code line: the command when there is one, else the tool.
     command: command || request.tool || "",
     files: (request.files ?? []).map(redact),
+    expiresAt: request.expiresAt ?? null,
   };
+}
+
+// ── Model and effort switching ───────────────────────────────────────────────
+
+/** One choice in the picker: a model of a provider, with its own efforts. */
+export interface ModelChoice {
+  provider: string;
+  providerName: string;
+  model: string;
+  name: string;
+  efforts: DshEffort[];
+  defaultEffort?: string | null;
+}
+
+/** Every model DSH reported, flattened, in the order it listed them. */
+export function modelChoices(catalog: DshCatalog | undefined): ModelChoice[] {
+  if (!catalog) return [];
+  const out: ModelChoice[] = [];
+  for (const provider of catalog.providers) {
+    for (const model of provider.models) {
+      out.push({
+        provider: provider.id,
+        providerName: provider.name || provider.id,
+        model: model.id,
+        name: model.name || model.id,
+        // Never merged with another model's list: a model that reports no
+        // efforts has none to offer.
+        efforts: model.efforts ?? [],
+        defaultEffort: model.defaultEffort ?? null,
+      });
+    }
+  }
+  return out;
+}
+
+/** The picker entry matching a selection, or null when the catalog lacks it. */
+export function choiceFor(
+  catalog: DshCatalog | undefined,
+  selection: DshSelection | null | undefined,
+): ModelChoice | null {
+  if (!selection) return null;
+  return (
+    modelChoices(catalog).find(
+      (c) => c.provider === selection.provider && c.model === selection.model,
+    ) ?? null
+  );
+}
+
+/** The value the bridge expects for a model: `provider/model`. */
+export function modelValue(choice: { provider: string; model: string }): string {
+  return `${choice.provider}/${choice.model}`;
+}
+
+/** The value the bridge expects for an effort. Empty means the provider default. */
+export function effortValue(effort: string | null | undefined): string {
+  return effort ?? "";
+}
+
+/** Whether a model exists in the catalog. The picker only offers known ones. */
+export function isKnownModel(catalog: DshCatalog | undefined, provider: string, model: string): boolean {
+  return modelChoices(catalog).some((c) => c.provider === provider && c.model === model);
+}
+
+/** Whether an effort belongs to this exact model. */
+export function isKnownEffort(
+  catalog: DshCatalog | undefined,
+  selection: DshSelection | null | undefined,
+  effort: string,
+): boolean {
+  if (effort === "") return true;
+  return effortsFor(catalog, selection).some((e) => e.id === effort);
+}
+
+/** "Provider · model · effort" for the picker's header, from what DSH reported. */
+export function selectionLine(
+  catalog: DshCatalog | undefined,
+  selection: DshSelection | null | undefined,
+): string {
+  if (!selection) return "";
+  const choice = choiceFor(catalog, selection);
+  const model = choice?.name ?? selection.model;
+  const provider = choice?.providerName ?? selection.provider;
+  const effort = selection.reasoningEffort
+    ? (choice?.efforts.find((e) => e.id === selection.reasoningEffort)?.name ?? selection.reasoningEffort)
+    : "";
+  return [provider, model, effort].filter(Boolean).join(" · ");
+}
+
+/**
+ * DSH records a selection and applies it to the *next* request: its own
+ * projection keeps `lastUsed` (what the running request sent) apart from
+ * `pending` (what comes next).
+ *
+ * So a change made while a turn is running must not be shown as already in
+ * effect for that turn. This is the rule the picker follows.
+ */
+export function appliesToNextRequest(session: DshSession | null): boolean {
+  return session?.state === "working" || session?.state === "thinking";
 }
 
 /** Which bridge an answer has to travel down. */

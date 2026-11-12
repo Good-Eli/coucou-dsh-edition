@@ -3607,3 +3607,118 @@ html[data-dir="rtl"] #views :is(.bubble, .reply .md-p, .reply .md-h, .reply .md-
   text-overflow: ellipsis;
   opacity: 0.86;
 }
+
+/* ── DSH model picker ────────────────────────────────────────────────────── */
+
+.model-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  height: 100%;
+  padding: 10px 14px 10px 16px;
+  overflow: hidden;
+}
+
+.model-who {
+  font: 600 12px var(--ui);
+  color: #e8e9ec;
+  white-space: nowrap;
+  flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #e8e9ec;
+  font: 500 12px var(--ui);
+  text-align: left;
+  cursor: pointer;
+}
+
+.model-row:hover { background: rgba(255, 255, 255, 0.1); }
+
+.model-row.on {
+  border-color: rgba(76, 141, 255, 0.85);
+  background: rgba(76, 141, 255, 0.16);
+}
+
+.model-provider {
+  font: 400 11px var(--ui);
+  color: rgba(232, 233, 236, 0.55);
+  white-space: nowrap;
+}
+
+.model-efforts-head {
+  font: 600 10px var(--ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(232, 233, 236, 0.5);
+  margin-top: 2px;
+}
+
+.model-efforts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: none;
+}
+
+.model-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: #e8e9ec;
+  font: 500 11px var(--ui);
+  cursor: pointer;
+}
+
+.model-chip:hover { background: rgba(255, 255, 255, 0.1); }
+
+.model-chip.on {
+  border-color: rgba(76, 141, 255, 0.85);
+  background: rgba(76, 141, 255, 0.18);
+}
+
+.model-note {
+  font: 400 11px var(--ui);
+  color: rgba(232, 233, 236, 0.6);
+  min-height: 14px;
+}
+
+.model-note.bad { color: #F4505E; }
+
+.model-empty {
+  font: 400 11px var(--ui);
+  color: rgba(232, 233, 236, 0.45);
+  padding: 2px 0;
+}
+
+/* DSH approval card: the time left before DSH asks its own question. */
+.approval-countdown {
+  position: absolute;
+  right: 14px;
+  top: 10px;
+  font: 500 11px var(--ui);
+  color: rgba(232, 233, 236, 0.5);
+  font-variant-numeric: tabular-nums;
+}
+
+.approval-countdown.soon { color: #F5A524; }

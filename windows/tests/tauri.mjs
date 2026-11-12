@@ -6,6 +6,20 @@
 export const calls = [];
 
 const listeners = new Map();
+const replies = new Map();
+
+/**
+ * What a command answers. Without one a command answers null, which is what
+ * most of them return; a command whose answer the island uses needs this.
+ */
+export function reply(cmd, value) {
+  replies.set(cmd, value);
+}
+
+/** Forgets every stubbed answer. */
+export function clearReplies() {
+  replies.clear();
+}
 
 export const internals = {
   transformCallback: (callback) => callback,
@@ -15,7 +29,9 @@ export const internals = {
       return listeners.size;
     }
     calls.push([cmd, args]);
-    return null;
+    if (!replies.has(cmd)) return null;
+    const value = replies.get(cmd);
+    return typeof value === "function" ? value(args) : value;
   },
 };
 
