@@ -142,6 +142,9 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::windows::named_pipe::ServerOptions;
 
+    /// `COUCOU_DSH_STATE_DIR` is process-global, so the tests that set it take
+    /// this lock. Without it they race and read each other's state directory.
+    static STATE_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     fn pipe_name(tag: &str) -> String {
         format!(r"\\.\pipe\coucou-test-{tag}-{}", std::process::id())
     }
@@ -210,10 +213,117 @@ mod tests {
         peer.abort();
     }
 
+    /// A pipe disconnected by its server must surface as an error the caller
+    /// can act on — not as a hang, and not as a clean end of stream.
+    ///
+    /// This is the shape of a DSH host restart: the plugin's pipe host is
+    /// terminated, Windows disconnects the instance, and a pending read fails
+    /// with ERROR_PIPE_NOT_CONNECTED (233).
+    #[tokio::test]
+    async fn a_disconnected_pipe_reports_an_error() {
+        use std::os::windows::io::AsRawHandle;
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn DisconnectNamedPipe(handle: *mut std::ffi::c_void) -> i32;
+        }
+
+        let name = pipe_name("disconnect");
+        let mut server = ServerOptions::new().first_pipe_instance(true).create(&name).unwrap();
+
+        let peer = tokio::spawn(async move {
+            server.connect().await.unwrap();
+            // Give the client time to be blocked in a read, then pull the plug
+            // the way a dying host does.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let disconnected = unsafe { DisconnectNamedPipe(server.as_raw_handle()) };
+            assert_ne!(disconnected, 0, "DisconnectNamedPipe failed");
+            // Keep the instance alive so the name stays taken for a moment.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            drop(server);
+        });
+
+        let mut client = Conn::open(&name, Duration::from_secs(2)).await.expect("client opens");
+        // Bounded: a hang here is the bug this test exists to catch.
+        let outcome = tokio::time::timeout(Duration::from_secs(5), client.next())
+            .await
+            .expect("the read must not hang after the server disconnects");
+
+        match outcome {
+            Err(err) => {
+                // 233 is ERROR_PIPE_NOT_CONNECTED; 109 is ERROR_BROKEN_PIPE.
+                // Either way the caller must see an error and reconnect.
+                let code = err.raw_os_error().unwrap_or(0);
+                assert!(
+                    code == 233 || code == 109,
+                    "unexpected error after disconnect: {err} (os {code})"
+                );
+            }
+            Ok(None) => {
+                // A clean end is also recoverable, but it must not be a hang.
+            }
+            Ok(Some(frame)) => panic!("a disconnected pipe must not deliver a frame: {frame}"),
+        }
+
+        peer.await.unwrap();
+    }
+
+    /// After a disconnect the name can be taken by a new server, and a fresh
+    /// connection works: the client recovers without being restarted.
+    #[tokio::test]
+    async fn a_new_server_on_the_same_name_is_reachable() {
+        let name = pipe_name("recover");
+
+        let first = ServerOptions::new().first_pipe_instance(true).create(&name).unwrap();
+        {
+            let mut client = Conn::open(&name, Duration::from_secs(2)).await.expect("first open");
+            drop(client);
+        }
+        drop(first);
+
+        // A moment for Windows to release the name.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let second = ServerOptions::new().first_pipe_instance(true).create(&name).expect("name is free again");
+        let peer = tokio::spawn(async move {
+            let mut server = second;
+            server.connect().await.unwrap();
+            let mut buffer = [0u8; 64];
+            let read = server.read(&mut buffer).await.unwrap();
+            String::from_utf8_lossy(&buffer[..read]).to_string()
+        });
+
+        let mut client = Conn::open(&name, Duration::from_secs(2)).await.expect("reopen after disconnect");
+        client.send("{\"t\":\"hello\"}").await.expect("send on the new connection");
+        let seen = peer.await.unwrap();
+        assert_eq!(seen.trim_end(), "{\"t\":\"hello\"}");
+    }
+    /// A restarted host rewrites runtime.json with a new token. The client reads
+    /// it on every attempt, so the token in force is always the current one.
+    #[test]
+    fn the_token_is_reread_after_the_host_restarts() {
+        let _guard = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("coucou-dsh-rotate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("runtime.json");
+        std::env::set_var("COUCOU_DSH_STATE_DIR", &dir);
+
+        std::fs::write(&file, r#"{"protocol":1,"pipe":"\\\\.\\pipe\\coucou-dsh-X","token":"old","pid":1}"#).unwrap();
+        assert_eq!(read_runtime().expect("first read").token, "old");
+
+        // The host restarts: same pipe name, new token.
+        std::fs::write(&file, r#"{"protocol":1,"pipe":"\\\\.\\pipe\\coucou-dsh-X","token":"new","pid":2}"#).unwrap();
+        let second = read_runtime().expect("second read");
+        assert_eq!(second.token, "new", "a stale token must never be reused");
+        assert_eq!(second.pid, Some(2));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     /// The token file is the only thing standing between a stranger and the
     /// bridge, so a missing or unreadable one must be a clear message.
     #[test]
     fn a_missing_runtime_file_says_the_bridge_is_not_running() {
+        let _guard = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("coucou-dsh-empty-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("COUCOU_DSH_STATE_DIR", &dir);
@@ -225,6 +335,7 @@ mod tests {
     /// A runtime file from a newer plugin is rejected rather than guessed at.
     #[test]
     fn a_runtime_file_is_read_as_written() {
+        let _guard = STATE_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("coucou-dsh-state-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(

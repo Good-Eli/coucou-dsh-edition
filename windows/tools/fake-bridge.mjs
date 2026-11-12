@@ -12,6 +12,7 @@
 
 import { createServer } from "node:net";
 import { writeFileSync, mkdirSync, appendFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 
 const [, , stateDir, pipeName] = process.argv;
@@ -20,7 +21,9 @@ if (!stateDir || !pipeName) {
   process.exit(2);
 }
 
-const TOKEN = "fake-token-for-tests";
+// A fresh token per start, as the real plugin writes one per host start: a
+// client that keeps the old one must be refused.
+const TOKEN = randomBytes(32).toString("hex");
 const logFile = join(stateDir, "fake-bridge.log");
 mkdirSync(stateDir, { recursive: true });
 const log = (line) => appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`);
