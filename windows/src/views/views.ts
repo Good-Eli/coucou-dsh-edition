@@ -544,9 +544,12 @@ function foldButton(actions: ViewActions): HTMLElement {
 function buildApproval(actions: ViewActions): ViewHost {
   const who = h("div");
   const code = h("div", { class: "code" });
+  // The files a request touches, one per line. Empty (and hidden) for the
+  // relay's cards, which show everything in the single code line.
+  const files = h("div", { class: "code dsh-files" });
   const row = h("div", { class: "actions" });
   const el = h("div", { class: "view" },
-    card("amber", stack(116, 16, who, code, row), foldButton(actions)));
+    card("amber", stack(116, 16, who, code, files, row), foldButton(actions)));
   let rowKey = "";
   // The card pops up under a cursor that was busy with something else: a click
   // meant for the window underneath must not land on Allow. Clicks in the first
@@ -556,6 +559,10 @@ function buildApproval(actions: ViewActions): ViewHost {
   const guarded = (d: "allow" | "deny") => () => {
     if (performance.now() - shownAt < CLICK_GUARD_MS) return;
     actions.decide(d);
+  };
+  const guardedTerminal = () => {
+    if (performance.now() - shownAt < CLICK_GUARD_MS) return;
+    actions.answerInTerminal();
   };
   return {
     el,
@@ -571,15 +578,25 @@ function buildApproval(actions: ViewActions): ViewHost {
       // is the command, the file path or the URL being authorised, not just the
       // name of the tool asking.
       code.textContent = State.pendingApproval?.command || State.pendingApproval?.tool || "…";
-      // Two buttons, built once. Rebuilding them between a mouse-down and a
-      // mouse-up would swallow the click, and there is nothing left to vary:
-      // "Always" is gone until the remembered-rules list exists to back it.
-      if (rowKey === "built") return;
-      rowKey = "built";
+      const touched = State.pendingApproval?.files ?? [];
+      files.style.display = touched.length ? "" : "none";
+      files.textContent = touched.join("\n");
+      // The buttons are built once per kind of request. Rebuilding them between
+      // a mouse-down and a mouse-up would swallow the click, and there is
+      // nothing else to vary: "Always" is gone until the remembered-rules list
+      // exists to back it.
+      const key = State.pendingApproval?.source === "dsh" ? "dsh" : "hook";
+      if (rowKey === key) return;
+      rowKey = key;
       clear(row);
       row.append(
         btn(tl("Deny"), "secondary", guarded("deny"), "N"),
         btn(tl("Allow"), "primary", guarded("allow"), "Y"),
+        // DSH's own prompt is the third answer: the question goes back to the
+        // app that asked it, unanswered.
+        ...(key === "dsh"
+          ? [btn(tl("Open DSH"), "secondary", guardedTerminal, "O")]
+          : []),
       );
     },
   };

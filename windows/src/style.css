@@ -3596,3 +3596,12 @@ html[data-dir="rtl"] #views :is(.bubble, .reply .md-p, .reply .md-h, .reply .md-
 ::-webkit-scrollbar-thumb:hover {
   background-color: rgba(255, 255, 255, 0.3);
 }
+
+/* DSH approval card: the files a request touches, one per line. */
+.code.dsh-files {
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 76px;
+  overflow-y: auto;
+  margin-top: -6px;
+}

@@ -166,7 +166,7 @@ async function main() {
   registerVoiceHandlers();
   registerSpotifyHandlers(island);
   registerWhatsAppHandlers(island);
-  registerDshHandlers();
+  registerDshHandlers(island);
   // New versions: Rust offers the card, the island opens it when nothing else waits.
   await Updates.register(island);
   // Rust may have read Spotify before this page listened: ask once.

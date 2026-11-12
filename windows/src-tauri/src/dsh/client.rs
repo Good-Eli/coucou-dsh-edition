@@ -371,6 +371,22 @@ fn queue(app: &AppHandle, frame: String) -> bool {
     }
 }
 
+/// Takes one request out of the pending list.
+///
+/// The answer is only sent when this returns true, so a second click on the same
+/// card — or a click on a card whose request already expired — cannot answer a
+/// question twice. DSH would treat the second answer as a decision on whatever
+/// it happened to be asking next.
+pub(crate) fn take_pending(snapshot: &mut Snapshot, request_id: &str) -> bool {
+    match snapshot.pending.iter().position(|p| p.request_id == request_id) {
+        Some(index) => {
+            snapshot.pending.remove(index);
+            true
+        }
+        None => false,
+    }
+}
+
 // ── Commands ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -406,13 +422,7 @@ pub fn dsh_approval(app: AppHandle, request_id: String, decision: String) -> Res
     let removed = {
         let Some(dsh) = app.try_state::<Dsh>() else { return Err("DSH is not connected".into()) };
         let mut guard = dsh.0.lock().unwrap_or_else(|e| e.into_inner());
-        match guard.pending.iter().position(|p| p.request_id == request_id) {
-            Some(index) => {
-                guard.pending.remove(index);
-                true
-            }
-            None => false,
-        }
+        take_pending(&mut guard, &request_id)
     };
     if !removed {
         return Err("that request is no longer waiting for an answer".into());
@@ -454,4 +464,43 @@ pub fn dsh_set_config(app: AppHandle, session_id: String, config_id: String, val
     } else {
         Err("DSH is not connected".into())
     }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pending(ids: &[&str]) -> Snapshot {
+        Snapshot {
+            pending: ids
+                .iter()
+                .map(|id| ApprovalAsked { request_id: id.to_string(), ..Default::default() })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_request_can_be_answered_once() {
+        let mut snapshot = pending(&["r1"]);
+        assert!(take_pending(&mut snapshot, "r1"), "the first click answers");
+        assert!(snapshot.pending.is_empty());
+        // The card is gone, so a second click must not reach the host.
+        assert!(!take_pending(&mut snapshot, "r1"), "the second click must not answer again");
+    }
+
+    #[test]
+    fn an_unknown_request_is_never_answered() {
+        let mut snapshot = pending(&["r1"]);
+        assert!(!take_pending(&mut snapshot, "r2"));
+        assert_eq!(snapshot.pending.len(), 1, "the waiting request is untouched");
+    }
+
+    #[test]
+    fn only_the_asked_request_leaves_the_queue() {
+        let mut snapshot = pending(&["r1", "r2", "r3"]);
+        assert!(take_pending(&mut snapshot, "r2"));
+        let left: Vec<&str> = snapshot.pending.iter().map(|p| p.request_id.as_str()).collect();
+        assert_eq!(left, ["r1", "r3"]);
+    }
+
 }

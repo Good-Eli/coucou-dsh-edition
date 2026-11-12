@@ -14,6 +14,7 @@ import {
   type BotEmoteName, type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { Sound } from "../core/sound";
+import { routeFor } from "../core/dsh";
 import { State } from "../core/state";
 import { SPOTIFY_ID, Spotify, islandDances } from "../core/spotify";
 import { BotEngine, hexToRGB } from "../mochi/engine";
@@ -243,7 +244,10 @@ export class Island {
         void Bridge.log(`decide ${d} req=${req?.requestId ?? "none"}`);
         if (!req) return;
         Sound.play(d === "deny" ? "blip" : "approve");
-        void Bridge.approvalDecision(req.requestId, d);
+        // The request's own source decides where the answer goes.
+        const route = routeFor(req, d);
+        if (route?.kind === "dsh") void Bridge.dshApproval(req.requestId, route.decision);
+        else if (route?.kind === "hook") void Bridge.approvalDecision(req.requestId, route.decision);
         this.closeApproval();
       },
       answer: (answers) => {
@@ -257,7 +261,9 @@ export class Island {
         const req = State.pendingApproval;
         if (!req) return;
         Sound.play("blip");
-        void Bridge.approvalDecline(req.requestId);
+        const route = routeFor(req, "open");
+        if (route?.kind === "dsh") void Bridge.dshApproval(req.requestId, route.decision);
+        else if (route?.kind === "hook-decline") void Bridge.approvalDecline(req.requestId);
         this.closeApproval();
       },
       toggleSound: () => {

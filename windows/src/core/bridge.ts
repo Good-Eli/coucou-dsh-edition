@@ -318,6 +318,16 @@ export const Bridge = {
   /** "Nobody can act on this" — Claude Code asks in the terminal right away. */
   approvalDecline: (requestId: string) => call<void>("approval_decline", { requestId }),
 
+  // ── DeepSeek Harness (its own bridge, src-tauri/src/dsh) ──────────────────
+  /**
+   * Answers one DSH request. "allow" and "deny" answer it; "open" hands it to
+   * DSH's own prompt. Only ever sent from a click on that exact card.
+   */
+  dshApproval: (requestId: string, decision: "allow" | "deny" | "open") =>
+    call<void>("dsh_approval", { requestId, decision }),
+  /** "The card is up" — DSH hands the question back if this never arrives. */
+  dshApprovalAck: (requestId: string) => call<void>("dsh_approval_ack", { requestId }),
+
   // ── Phone link (Coucou for Android) ───────────────────────────────────────
   phoneLinkStatus: () => call<PhoneLinkStatus>("phone_link_status"),
   /** Only ever from the switch in Settings. Throws with the reason if it cannot start. */

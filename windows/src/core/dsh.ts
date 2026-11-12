@@ -160,3 +160,75 @@ export function islandState(session: DshSession | null): "idle" | "working" | "t
       return "idle";
   }
 }
+
+/**
+ * What a secret looks like in a command line, a URL or a path.
+ *
+ * The card is the one place a command is shown at length, so it is also the one
+ * place a token could leak onto a screen someone else is looking at. Anything
+ * that looks like a credential is replaced before the card is built — the
+ * request itself is untouched, only what is displayed.
+ */
+const SECRET_PATTERNS: [RegExp, string][] = [
+  // --token=abc, --api-key abc, PASSWORD=abc, "secret": "abc"
+  [/((?:token|secret|password|passwd|pwd|api[_-]?key|access[_-]?key|private[_-]?key|auth)[a-z_-]*\s*(?:[=:]\s*|\s+))("?)([^\s"',;]{4,})\2/gi, "$1$2••••$2"],
+  // A bare bearer token after a header name.
+  [/(bearer\s+)[A-Za-z0-9._\-]{8,}/gi, "$1••••"],
+  // Long high-entropy runs: sk-…, ghp_…, xoxb-…, AWS keys, JWT-ish blobs.
+  [/\b(sk|pk|ghp|gho|ghs|github_pat|xox[baprs]|AKIA|ASIA)[-_A-Za-z0-9]{12,}\b/g, "••••"],
+  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, "••••"],
+  // A URL with credentials in it.
+  [/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1••••:••••@"],
+];
+
+/** The same text with credentials replaced. Display only. */
+export function redact(text: string): string {
+  let out = text;
+  for (const [pattern, replacement] of SECRET_PATTERNS) out = out.replace(pattern, replacement);
+  return out;
+}
+
+/** One request, shaped the way the island's approval card expects it. */
+export function approvalCard(request: DshApproval, session: DshSession | null): {
+  requestId: string;
+  sessionId: string;
+  pillId: string;
+  tool: string;
+  command: string;
+  files: string[];
+} {
+  const command = request.command ? redact(request.command) : "";
+  return {
+    requestId: request.requestId,
+    sessionId: request.sessionId ?? session?.id ?? "",
+    pillId: DSH_PILL_ID,
+    tool: request.tool || "tool",
+    // The card's one code line: the command when there is one, else the tool.
+    command: command || request.tool || "",
+    files: (request.files ?? []).map(redact),
+  };
+}
+
+/** Which bridge an answer has to travel down. */
+export type AnswerRoute =
+  | { kind: "dsh"; decision: "allow" | "deny" | "open" }
+  | { kind: "hook"; decision: "allow" | "deny" }
+  | { kind: "hook-decline" };
+
+/**
+ * The command a click turns into.
+ *
+ * A request answered down the wrong path would either be lost or — worse — be
+ * read as an answer to a different question, so the source decides it and there
+ * is no default.
+ */
+export function routeFor(
+  request: { source?: "hook" | "dsh" } | null,
+  decision: "allow" | "deny" | "open",
+): AnswerRoute | null {
+  if (!request) return null;
+  if (request.source === "dsh") return { kind: "dsh", decision };
+  // The relay only knows allow and deny; "open" is its own command there.
+  if (decision === "open") return { kind: "hook-decline" };
+  return { kind: "hook", decision };
+}

@@ -48,6 +48,14 @@ export interface ApprovalInfo {
   pillId: string;
   tool: string;
   command: string;
+  /**
+   * Who is asking. "hook" is the relay (Claude Code and the agents it carries);
+   * "dsh" is DeepSeek Harness over its own bridge. The answer has to go back
+   * down the same path the question came from.
+   */
+  source?: "hook" | "dsh";
+  /** Files the request touches, already trimmed for display. */
+  files?: string[];
   /** Set when Claude Code is asking a question rather than for a permission. */
   questions?: AskedQuestion[];
 }
