@@ -352,6 +352,10 @@ export const Bridge = {
     ),
   /** Re-applies the island's geometry from the current settings. */
   repositionIsland: () => call<void>("reposition"),
+  /** The island's top-left corner, in logical pixels. */
+  islandPosition: () => call<[number, number] | null>("island_position"),
+  /** Moves the island so its top-left corner lands on these logical pixels. */
+  islandMoveTo: (x: number, y: number) => call<void>("island_move_to", { x, y }),
 
   // ── Phone link (Coucou for Android) ───────────────────────────────────────
   phoneLinkStatus: () => call<PhoneLinkStatus>("phone_link_status"),

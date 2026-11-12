@@ -145,7 +145,8 @@ impl Default for IslandPlacement {
         IslandPlacement {
             mode: "bottomLeft".into(),
             offset_x: 24.0,
-            offset_y: 24.0,
+            // Flush with the bottom edge, so the island covers the taskbar.
+            offset_y: 0.0,
             custom_x: 0.0,
             custom_y: 0.0,
         }

@@ -215,7 +215,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ],
   mainPill: DEFAULT_MAIN_PILL,
   screen: "primary",
-  placement: { mode: "bottomLeft", offsetX: 24, offsetY: 24, customX: 0, customY: 0 },
+  placement: { mode: "bottomLeft", offsetX: 24, offsetY: 0, customX: 0, customY: 0 },
   autostart: false,
   hooksInstalled: false,
   model: "claude-opus-5",

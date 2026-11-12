@@ -290,6 +290,30 @@ fn snap_island_placement(app: AppHandle, shared: State<Shared>) -> settings::Isl
     placement
 }
 
+/// The island's top-left corner in logical pixels.
+///
+/// The page drags the panel itself rather than asking the window manager:
+/// `startDragging` does nothing on a window created with `WS_EX_NOACTIVATE`,
+/// which the island is (it must not steal focus from the app behind it).
+#[tauri::command]
+fn island_position(app: AppHandle) -> Option<(f64, f64)> {
+    let win = island::window(&app)?;
+    let pos = win.outer_position().ok()?;
+    let scale = win.scale_factor().ok()?;
+    Some((pos.x as f64 / scale, pos.y as f64 / scale))
+}
+
+/// Moves the island so its top-left corner lands on these logical pixels.
+#[tauri::command]
+fn island_move_to(app: AppHandle, x: f64, y: f64) {
+    let Some(win) = island::window(&app) else { return };
+    let Ok(scale) = win.scale_factor() else { return };
+    let _ = win.set_position(tauri::PhysicalPosition::new(
+        (x * scale).round() as i32,
+        (y * scale).round() as i32,
+    ));
+}
+
 #[tauri::command]
 fn reposition(app: AppHandle, shared: State<Shared>) {
     let (pref, placement) = {
@@ -1027,6 +1051,8 @@ pub fn run() {
             set_island_rect,
             focus_window,
             reposition,
+            island_position,
+            island_move_to,
             snap_island_placement,
             fit_zoom,
             hub_shown,

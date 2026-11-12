@@ -400,15 +400,15 @@ mod zoom_tests {
     #[test]
     fn the_default_is_the_bottom_left_corner() {
         assert_eq!(Placement::default().mode, PlacementMode::BottomLeft);
-        // 24 px from the left edge, 24 px above the bottom of the work area.
-        assert_eq!(at(PlacementMode::BottomLeft, (720.0, 320.0)), (24.0, 1040.0 - 24.0 - 320.0));
+        // 24 px from the left edge, sitting on the bottom of the work area.
+        assert_eq!(at(PlacementMode::BottomLeft, (720.0, 320.0)), (24.0, 1040.0 - 320.0));
     }
 
     #[test]
     fn bottom_right_is_the_mirror_of_bottom_left() {
         let (x, y) = at(PlacementMode::BottomRight, (720.0, 320.0));
         assert_eq!(x, 1920.0 - 24.0 - 720.0);
-        assert_eq!(y, 1040.0 - 24.0 - 320.0);
+        assert_eq!(y, 1040.0 - 320.0);
     }
 
     #[test]
@@ -417,7 +417,7 @@ mod zoom_tests {
         // to the same edges, which is what makes the growth look anchored.
         let (x, y) = at(PlacementMode::BottomLeft, (160.0, 26.0));
         assert_eq!(x, 24.0, "the left edge does not move");
-        assert_eq!(y, 1040.0 - 24.0 - 26.0, "the bottom edge does not move");
+        assert_eq!(y, 1040.0 - 26.0, "the bottom edge does not move");
         let (xr, _) = at(PlacementMode::BottomRight, (160.0, 26.0));
         assert_eq!(xr, 1920.0 - 24.0 - 160.0, "the right edge does not move");
     }
@@ -468,7 +468,7 @@ mod zoom_tests {
         // ordinary, not something to clamp away.
         let left = Area { x: -1920.0, y: -200.0, w: 1920.0, h: 1040.0 };
         let p = Placement::default();
-        assert_eq!(placed_origin(&p, (720.0, 320.0), left), (-1920.0 + 24.0, -200.0 + 1040.0 - 24.0 - 320.0));
+        assert_eq!(placed_origin(&p, (720.0, 320.0), left), (-1920.0 + 24.0, -200.0 + 1040.0 - 320.0));
     }
 
     #[test]
@@ -642,7 +642,8 @@ impl Default for Placement {
     fn default() -> Self {
         Placement {
             mode: PlacementMode::default(),
-            offset: (24.0, 24.0),
+            // No gap under the island: it sits on the edge of the display.
+            offset: (24.0, 0.0),
             custom: (0.0, 0.0),
         }
     }
@@ -743,12 +744,27 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, placement: &Placement, collap
 
     // The work area comes back in physical pixels; the stored position is
     // logical, so both sides of the sum have to agree before it is used.
+    //
+    // An island hanging from the bottom is measured against the whole display,
+    // not the work area: it is meant to sit on the edge of the screen and cover
+    // the taskbar, which is how the Mac's island sits in its notch. The top
+    // anchor keeps the work area, so a taskbar docked at the top still pushes
+    // it down as before.
+    let mp = *m.position();
     let wa = m.work_area();
-    let area = Area {
-        x: wa.position.x as f64 / scale,
-        y: wa.position.y as f64 / scale,
-        w: wa.size.width as f64 / scale,
-        h: wa.size.height as f64 / scale,
+    let area = match placement.mode {
+        PlacementMode::BottomLeft | PlacementMode::BottomRight => Area {
+            x: mp.x as f64 / scale,
+            y: mp.y as f64 / scale,
+            w: ms.width as f64 / scale,
+            h: ms.height as f64 / scale,
+        },
+        _ => Area {
+            x: wa.position.x as f64 / scale,
+            y: wa.position.y as f64 / scale,
+            w: wa.size.width as f64 / scale,
+            h: wa.size.height as f64 / scale,
+        },
     };
     let (lx_pos, ly_pos) = placed_origin(placement, (lw, lh), area);
     // The work area is already absolute in the virtual desktop, so the result

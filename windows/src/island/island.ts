@@ -13,7 +13,6 @@ import {
   QUESTION_PICKER_H,
   type BotEmoteName, type IslandMode, type IslandViewName,
 } from "../core/layout";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sound } from "../core/sound";
 import { DSH_PILL_ID as DSH_ID, routeFor } from "../core/dsh";
 import { chooseEffort, chooseModel } from "./dsh";
@@ -451,21 +450,55 @@ export class Island {
     // real drag may write the setting back. Without this, every launch would
     // overwrite the stored placement with wherever the window happened to be.
     let dragging = false;
-    this.islandEl.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0) return;
-      const target = event.target as HTMLElement | null;
-      if (target?.closest("button, a, input, textarea, select, canvas, [data-no-drag]")) return;
-      dragging = true;
-      void getCurrentWindow().startDragging();
+    let grab: { sx: number; sy: number } | null = null;
+    // Capture phase, and `mousedown` rather than `pointerdown`: the panel has its
+    // own mousedown handler that treats a press as "open me", so a drag that did
+    // not run first just expanded the island under the pointer. Stopping the
+    // event here is what makes dragging win over opening.
+    this.islandEl.addEventListener(
+      "mousedown",
+      (event) => {
+        if (event.button !== 0) return;
+        const target = event.target as HTMLElement | null;
+        // The handle is the header, not the whole panel: the panel is a row of
+        // buttons and views, and pulling the window out from under a click
+        // would lose it. Mochi keeps his own drag to the desktop.
+        if (!target?.closest("#header")) return;
+        if (target.closest("button, a, input, select, [data-no-drag]")) return;
+        event.stopPropagation();
+        event.preventDefault();
+        Sound.resume();
+        // Not `startDragging`: the island window is WS_EX_NOACTIVATE so it does
+        // not take focus from the app behind it, and that is exactly the window
+        // the platform drag loop refuses to move. Moving it ourselves is what
+        // Coucou already does for Mochi.
+        void Bridge.islandPosition()
+          .then((at) => {
+            if (!at) return;
+            dragging = true;
+            // Where the pointer sits inside the panel, so the panel does not
+            // jump to the cursor when the press lands.
+            grab = { sx: event.screenX - at[0], sy: event.screenY - at[1] };
+          })
+          .catch(() => undefined);
+      },
+      true,
+    );
+    window.addEventListener("mousemove", (event) => {
+      if (!dragging || !grab) return;
+      if (!(event.buttons & 1)) {
+        dragging = false;
+        grab = null;
+        return;
+      }
+      void Bridge.islandMoveTo(event.screenX - grab.sx, event.screenY - grab.sy).catch(() => undefined);
     });
-    // A native drag swallows pointerup, so the end of the drag is the last
-    // `onMoved` plus a pause. Saving on every move would rewrite settings.json
-    // dozens of times a second.
-    void getCurrentWindow().onMoved(() => {
+    window.addEventListener("mouseup", () => {
       if (!dragging) return;
+      dragging = false;
+      grab = null;
       window.clearTimeout(settle);
       settle = window.setTimeout(() => {
-        dragging = false;
         void Bridge.snapIslandPlacement()
           .then((placed) => {
             if (placed) State.settings.placement = placed;
@@ -899,10 +932,26 @@ export class Island {
     this.islandEl.style.width = `${w}px`;
     this.islandEl.style.height = `${hh}px`;
     this.syncPlacementClasses();
+    // Anchored inline rather than through the `place-*` classes: the panel's
+    // own rules set `top` and a centring transform, and losing that fight left
+    // the panel floating at the top of a window that was already at the bottom
+    // of the screen.
+    if (this.placeFromBottom) {
+      this.islandEl.style.top = "auto";
+      this.islandEl.style.bottom = "0px";
+      this.islandEl.style.left = "0px";
+      this.islandEl.style.right = "auto";
+      this.islandEl.style.transform = "none";
+    } else {
+      this.islandEl.style.top = "0px";
+      this.islandEl.style.bottom = "auto";
+      this.islandEl.style.left = "50%";
+      this.islandEl.style.right = "auto";
+      this.islandEl.style.transform = "translateX(-50%)";
+    }
     this.islandEl.style.borderRadius = this.placeFromBottom
       ? `${r}px ${r}px 0 0`
       : `0 0 ${r}px ${r}px`;
-    this.islandEl.style.transform = this.placeFromBottom ? "none" : `translateX(-50%)`;
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
     this.miniGrid.style.left = `${w - 40 - 14.5}px`;
