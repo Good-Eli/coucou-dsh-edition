@@ -3727,42 +3727,57 @@ html[data-dir="rtl"] #views :is(.bubble, .reply .md-p, .reply .md-h, .reply .md-
 .approval-note {
   font: 500 11px var(--ui);
   color: #F5A524;
-  margin-top: -2px;
-}
-
 /* ── Where the island hangs from ──────────────────────────────────────────
    Set from settings.placement.mode (see Island.syncPlacementClasses). The
-   window itself is placed by apply_geometry; these rules keep the panel and
-   the wake strip inside it pointing the same way, and make the animations grow
-   from the corner the panel is anchored to instead of from the middle of the
-   screen. Nothing else about the panel changes. */
+   window itself is placed by apply_geometry; these rules keep the panel and the
+   wake strip pointing the same way, and make the corners and the animation
+   origin follow the edge the panel is anchored to.
 
-body.place-bottom-left #island,
-body.place-bottom-right #island {
-  top: auto;
-  bottom: 0;
-  transform: none;
+   `place-up` means the panel hangs from the bottom of the screen or sits on the
+   taskbar: it grows upwards, so its rounded corners are the top ones and it
+   unfolds from the bottom edge. `place-down` is the top edge, which keeps the
+   shape every Coucou before this one had. */
+
+body.place-up #island {
+  border-radius: 14px 14px 0 0;
+  transform-origin: left bottom;
 }
 
-body.place-bottom-left #island { left: 0; }
-body.place-bottom-right #island { left: auto; right: 0; }
+body.place-down #island {
+  border-radius: 0 0 14px 14px;
+  transform-origin: center top;
+}
+
+/* The wake strip follows the same edge, so waking the island from the edge of
+   the screen still finds it there. */
+body.place-up #wake-strip {
+  top: auto;
+  bottom: 0;
+}
+
+body.place-down #wake-strip {
+  top: 0;
+  bottom: auto;
+}
+
+/* The panel is pinned to the anchored side of its window. */
+body.place-bottom-left #island,
+body.place-taskbar-left #island { left: 0; right: auto; }
+body.place-bottom-right #island,
+body.place-taskbar-right #island { left: auto; right: 0; }
+body.place-top-left #island { left: 0; right: auto; }
+body.place-top-right #island { left: auto; right: 0; }
+body.place-top-center #island { left: 50%; right: auto; }
 
 body.place-bottom-left #wake-strip,
-body.place-bottom-right #wake-strip {
-  top: auto;
-  bottom: 0;
-  transform: none;
-}
+body.place-taskbar-left #wake-strip { left: 0; }
+body.place-bottom-right #wake-strip,
+body.place-taskbar-right #wake-strip { left: auto; right: 0; }
 
-body.place-bottom-left #wake-strip { left: 0; }
-body.place-bottom-right #wake-strip { left: auto; right: 0; }
-
-body.place-custom #island,
-body.place-custom #wake-strip {
-  left: 0;
-  transform: none;
-}
-
-body.place-bottom-left #island { transform-origin: left bottom; }
-body.place-bottom-right #island { transform-origin: right bottom; }
+/* The animation origin mirrors the anchor: the panel unfolds away from the
+   corner it is attached to. */
+body.place-bottom-right #island,
+body.place-taskbar-right #island { transform-origin: right bottom; }
+body.place-top-left #island { transform-origin: left top; }
+body.place-top-right #island { transform-origin: right top; }
 body.place-custom #island { transform-origin: left top; }

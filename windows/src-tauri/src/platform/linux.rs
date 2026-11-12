@@ -349,6 +349,15 @@ pub fn open_dsh_window() -> bool {
     false
 }
 
+/// No fullscreen detection on Linux in this build: the island keeps whatever
+/// stacking order its window manager gives it.
+pub fn foreground_box(_exclude: &[isize]) -> Option<(i32, i32, i32, i32)> {
+    None
+}
+
+/// Stacking is the window manager's business here.
+pub fn set_topmost(_win: &tauri::WebviewWindow, _topmost: bool) {}
+
 pub fn open_claude_desktop() -> bool {
     open_claude_with(
         || {

@@ -57,9 +57,12 @@ const modeOrder = (m: IslandMode) => (m === "hidden" ? 0 : m === "compact" ? 1 :
 /** How long the island must stay still before a drag counts as finished. */
 const DRAG_SETTLE_MS = 200;
 
-/** True when the island hangs from the bottom of its display. */
-function isBottomMode(mode: string): boolean {
-  return mode === "bottomLeft" || mode === "bottomRight" || mode === "custom";
+/** The modes anchored to the right-hand side of their edge. */
+const RIGHT_MODES = ["bottomRight", "taskbarRight", "topRight"];
+
+/** True when the panel grows upwards, so its rounded corners are the top ones. */
+function growsUp(mode: string): boolean {
+  return mode !== "topCenter" && mode !== "topLeft" && mode !== "topRight";
 }
 
 export class Island {
@@ -910,9 +913,10 @@ export class Island {
     this.ensureRunning();
   }
 
-  /// Whether the panel grows upwards from the bottom of its display.
+  /// Whether the panel grows upwards, from the bottom of the screen or the
+  /// taskbar. The top edge grows downwards, as it always did.
   private get placeFromBottom() {
-    return isBottomMode(State.settings.placement?.mode ?? "");
+    return growsUp(State.settings.placement?.mode ?? "");
   }
 
   /// One class on `body` says which edges the panel is anchored to, so the CSS
@@ -920,15 +924,22 @@ export class Island {
   private syncPlacementClasses() {
     const mode = State.settings.placement?.mode ?? "";
     const body = document.body;
-    for (const name of ["bottom-left", "bottom-right", "custom", "top-center"]) {
-      body.classList.toggle(`place-${name}`, name === mode.replace(/([A-Z])/g, "-$1").toLowerCase());
+    const wanted = mode.replace(/([A-Z])/g, "-$1").toLowerCase();
+    for (const name of ["bottom-left", "bottom-right", "taskbar-left", "taskbar-right", "top-left", "top-right", "top-center"]) {
+      body.classList.toggle(`place-${name}`, name === wanted);
     }
+    // Which way the panel hangs, so one rule can own the corners and the
+    // animation origin without every rule asking about the mode.
+    body.classList.toggle("place-up", growsUp(mode));
+    body.classList.toggle("place-down", !growsUp(mode));
   }
+
+  /// The panel's box in window coordinates, refreshed on every layout.
+  private islandBox = { x: 0, y: 0, w: 0, h: 0 };
 
   private applyGeometry() {
     const w = this.width.value;
     const hh = this.height.value;
-    const r = this.radius.value;
     this.islandEl.style.width = `${w}px`;
     this.islandEl.style.height = `${hh}px`;
     this.syncPlacementClasses();
@@ -936,22 +947,23 @@ export class Island {
     // own rules set `top` and a centring transform, and losing that fight left
     // the panel floating at the top of a window that was already at the bottom
     // of the screen.
-    if (this.placeFromBottom) {
-      this.islandEl.style.top = "auto";
-      this.islandEl.style.bottom = "0px";
-      this.islandEl.style.left = "0px";
-      this.islandEl.style.right = "auto";
-      this.islandEl.style.transform = "none";
-    } else {
-      this.islandEl.style.top = "0px";
-      this.islandEl.style.bottom = "auto";
+    const mode = State.settings.placement?.mode ?? "";
+    const up = growsUp(mode);
+    this.islandEl.style.top = up ? "auto" : "0px";
+    this.islandEl.style.bottom = up ? "0px" : "auto";
+    if (mode === "topCenter") {
       this.islandEl.style.left = "50%";
       this.islandEl.style.right = "auto";
       this.islandEl.style.transform = "translateX(-50%)";
+    } else {
+      const right = RIGHT_MODES.includes(mode);
+      this.islandEl.style.left = right ? "auto" : "0px";
+      this.islandEl.style.right = right ? "0px" : "auto";
+      this.islandEl.style.transform = "none";
     }
-    this.islandEl.style.borderRadius = this.placeFromBottom
-      ? `${r}px ${r}px 0 0`
-      : `0 0 ${r}px ${r}px`;
+    // Corners come from style.css, keyed on `place-up` / `place-down`: the
+    // radius has to follow the edge, and keeping it here as well meant two
+    // places to change and one of them always stale.
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
     this.miniGrid.style.left = `${w - 40 - 14.5}px`;
@@ -968,6 +980,7 @@ export class Island {
     const originY = this.placeFromBottom ? Math.max(0, viewportH - hh) : 0;
     const originX = this.placeFromBottom ? 0 : (viewportW - w) / 2;
     const rect = { x: originX, y: originY, w, h: hh };
+    this.islandBox = rect;
     const p = this.pushedRect;
     if (Math.abs(p.x - rect.x) > 0.5 || Math.abs(p.w - rect.w) > 0.5 || Math.abs(p.h - rect.h) > 0.5) {
       this.pushedRect = rect;
@@ -976,11 +989,14 @@ export class Island {
   }
 
   /** Island rect in window coordinates (origin top-left of the 720×320 window). */
+  /// The panel's box in window coordinates.
+  ///
+  /// Kept from the last layout rather than recomputed here: where the panel sits
+  /// depends on which edge it is anchored to, and hit-testing Mochi against the
+  /// old "top centre" answer is what made right-clicks miss him and fall through
+  /// to the webview's own menu.
   private islandRect(): { x: number; y: number; w: number; h: number } {
-    const w = this.width.value;
-    const hh = this.height.value;
-    const viewportW = window.innerWidth > 0 ? window.innerWidth : PANEL_W;
-    return { x: (viewportW - w) / 2, y: 0, w, h: hh };
+    return this.islandBox;
   }
 
   // ── Window collapse (hidden → tiny wake strip, zero polling) ────────────────

@@ -35,7 +35,8 @@ use ::windows::Win32::UI::Shell::{
 };
 use ::windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EnumChildWindows, EnumWindows, GetClassNameW, GetCursorPos,
-    GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowTextW, GetWindowThreadProcessId,
+    GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
+    GetWindowThreadProcessId,
     IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow, SetWindowLongPtrW, ShowWindow,
     GWL_EXSTYLE, GW_OWNER, SW_RESTORE, SW_SHOW, SW_SHOWNORMAL, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
@@ -586,7 +587,6 @@ fn focus_app(exe: &str) -> bool {
 }
 
 /// DeepSeek Harness's own window, brought to the front.
-///
 /// This is what "Open DSH" needs: the bridge can hand a question back to DSH,
 /// but nothing in that protocol can raise a window — the plugin runs inside the
 /// host and has no window of its own to show. Without this the request went back
@@ -598,6 +598,73 @@ fn focus_app(exe: &str) -> bool {
 /// Restoring the window ourselves works on both.
 pub fn open_dsh_window() -> bool {
     focus_app("DeepSeek Harness.exe")
+}
+
+/// Whether the window in front is a full-screen app rather than the desktop.
+///
+/// Fullscreen video in a browser is a borderless window covering its whole
+/// The foreground window's rectangle in physical pixels, unless it is the
+/// desktop, the shell, or one of `exclude` (the island's own windows).
+///
+/// Fullscreen video in a browser is a borderless window covering its whole
+/// display, so the test the caller applies is geometric: this returns the box
+/// and the caller checks whether it covers a monitor edge to edge. That keeps
+/// the island off a fullscreen game or video without needing to know anything
+/// about the app.
+pub fn foreground_box(exclude: &[isize]) -> Option<(i32, i32, i32, i32)> {
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() || !IsWindowVisible(fg).as_bool() {
+            return None;
+        }
+        if exclude.contains(&(fg.0 as isize)) {
+            return None;
+        }
+        let mut class = [0u16; 256];
+        let len = GetClassNameW(fg, &mut class);
+        let class = String::from_utf16_lossy(&class[..(len.max(0) as usize).min(class.len())]);
+        // The shell and the desktop cover the screen by definition.
+        if matches!(
+            class.as_str(),
+            "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "Windows.UI.Core.CoreWindow"
+        ) {
+            return None;
+        }
+        let mut rect = ::windows::Win32::Foundation::RECT::default();
+        if GetWindowRect(fg, &mut rect).is_err() {
+            return None;
+        }
+        if rect.right <= rect.left || rect.bottom <= rect.top {
+            return None;
+        }
+        Some((rect.left, rect.top, rect.right, rect.bottom))
+    }
+}
+
+/// Puts the island above the taskbar, or takes it out of the topmost band.
+///
+/// A topmost window sits above the taskbar, because the taskbar is topmost too
+/// and the last one to say so wins. It is also above borderless fullscreen video,
+/// which is the case this exists to avoid: the caller takes the island out of the
+/// topmost band while a fullscreen app is in front, and puts it back after.
+pub fn set_topmost(win: &WebviewWindow, topmost: bool) {
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+    let Ok(raw) = win.hwnd() else { return };
+    let hwnd = HWND(raw.0 as *mut _);
+    let insert_after = if topmost { HWND_TOPMOST } else { HWND_NOTOPMOST };
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(insert_after),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
 }
 
 /// The Claude desktop app: brought forward when it runs (Claude Code's own

@@ -129,6 +129,7 @@ impl PollGate {
     }
 }
 
+
 pub fn window(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window(WINDOW_LABEL)
 }
@@ -388,164 +389,201 @@ mod zoom_tests {
 
     // ── Placement ────────────────────────────────────────────────────────────
 
-    /// 1920×1040 work area at the origin: a 1080 display minus a 40 px taskbar.
+    /// A 1920×1080 screen with a 40 px taskbar at the bottom.
+    fn screen() -> Area {
+        Area { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 }
+    }
     fn work() -> Area {
         Area { x: 0.0, y: 0.0, w: 1920.0, h: 1040.0 }
     }
 
     fn at(mode: PlacementMode, size: (f64, f64)) -> (f64, f64) {
-        placed_origin(&Placement { mode, ..Placement::default() }, size, work())
+        placed_origin(&Placement { mode, ..Placement::default() }, size, screen(), work())
     }
 
     #[test]
-    fn the_default_is_the_bottom_left_corner() {
+    fn the_default_hangs_from_the_bottom_of_the_screen() {
         assert_eq!(Placement::default().mode, PlacementMode::BottomLeft);
-        // 24 px from the left edge, sitting on the bottom of the work area.
-        assert_eq!(at(PlacementMode::BottomLeft, (720.0, 320.0)), (24.0, 1040.0 - 320.0));
+        // 24 px in from the left, flush with the bottom of the screen: the panel
+        // covers the taskbar there.
+        assert_eq!(at(PlacementMode::BottomLeft, (720.0, 320.0)), (24.0, 1080.0 - 320.0));
     }
 
     #[test]
-    fn bottom_right_is_the_mirror_of_bottom_left() {
-        let (x, y) = at(PlacementMode::BottomRight, (720.0, 320.0));
+    fn the_taskbar_edge_sits_on_the_taskbar() {
+        // Same corner, but the bottom is the top of the 40 px taskbar.
+        assert_eq!(at(PlacementMode::TaskbarLeft, (720.0, 320.0)), (24.0, 1040.0 - 320.0));
+        let (x, y) = at(PlacementMode::TaskbarRight, (720.0, 320.0));
         assert_eq!(x, 1920.0 - 24.0 - 720.0);
         assert_eq!(y, 1040.0 - 320.0);
     }
 
     #[test]
+    fn the_top_edge_hangs_down_from_the_screen_top() {
+        // The top anchor uses the screen, so a taskbar at the bottom changes nothing.
+        assert_eq!(at(PlacementMode::TopCenter, (720.0, 320.0)), (600.0, 0.0));
+        assert_eq!(at(PlacementMode::TopLeft, (720.0, 320.0)), (24.0, 0.0));
+        assert_eq!(at(PlacementMode::TopRight, (720.0, 320.0)).0, 1920.0 - 24.0 - 720.0);
+    }
+
+    #[test]
+    fn only_the_top_edge_grows_downwards() {
+        assert!(PlacementMode::BottomLeft.grows_up());
+        assert!(PlacementMode::TaskbarRight.grows_up());
+        assert!(!PlacementMode::TopCenter.grows_up());
+        assert!(!PlacementMode::TopLeft.grows_up());
+    }
+
+    #[test]
     fn a_closed_island_stays_in_its_corner() {
-        // The closed island is smaller; placed by the same rule it stays glued
-        // to the same edges, which is what makes the growth look anchored.
         let (x, y) = at(PlacementMode::BottomLeft, (160.0, 26.0));
         assert_eq!(x, 24.0, "the left edge does not move");
-        assert_eq!(y, 1040.0 - 26.0, "the bottom edge does not move");
+        assert_eq!(y, 1080.0 - 26.0, "the bottom edge does not move");
         let (xr, _) = at(PlacementMode::BottomRight, (160.0, 26.0));
         assert_eq!(xr, 1920.0 - 24.0 - 160.0, "the right edge does not move");
+        assert_eq!(at(PlacementMode::TopCenter, (160.0, 26.0)).1, 0.0);
     }
 
     #[test]
-    fn custom_keeps_the_corner_the_user_dropped_it_at() {
-        let p = Placement {
-            mode: PlacementMode::Custom,
-            custom: (500.0, 260.0),
-            ..Placement::default()
-        };
-        assert_eq!(placed_origin(&p, (720.0, 320.0), work()), (500.0, 260.0));
-    }
-
-    #[test]
-    fn top_centre_is_what_coucou_always_did() {
-        assert_eq!(at(PlacementMode::TopCenter, (720.0, 320.0)), (600.0, 0.0));
-    }
-
-    #[test]
-    fn nothing_leaves_the_work_area() {
-        // A custom position past the edge is pulled back whole, not clipped.
-        let p = Placement {
-            mode: PlacementMode::Custom,
-            custom: (1900.0, 1030.0),
-            ..Placement::default()
-        };
-        assert_eq!(placed_origin(&p, (720.0, 320.0), work()), (1920.0 - 720.0, 1040.0 - 320.0));
-
-        // Negative works too.
-        let p = Placement {
-            mode: PlacementMode::Custom,
-            custom: (-500.0, -500.0),
-            ..Placement::default()
-        };
-        assert_eq!(placed_origin(&p, (720.0, 320.0), work()), (0.0, 0.0));
+    fn nothing_leaves_the_screen() {
+        // An offset larger than the screen pulls the panel back to its origin
+        // rather than off the edge.
+        let p = Placement { mode: PlacementMode::BottomRight, offset: (5000.0, 5000.0), custom: (0.0, 0.0) };
+        let (x, y) = placed_origin(&p, (720.0, 320.0), screen(), work());
+        assert_eq!((x, y), (0.0, 0.0));
     }
 
     #[test]
     fn a_window_bigger_than_the_display_sits_at_the_origin() {
-        let p = Placement { mode: PlacementMode::Custom, custom: (50.0, 50.0), ..Placement::default() };
-        assert_eq!(placed_origin(&p, (4000.0, 3000.0), work()), (0.0, 0.0));
+        assert_eq!(at(PlacementMode::BottomLeft, (4000.0, 3000.0)), (0.0, 0.0));
     }
 
     #[test]
-    fn a_second_display_is_measured_from_its_own_work_area() {
+    fn a_second_display_is_measured_from_its_own_edges() {
         // A monitor to the left of the primary one: negative coordinates are
         // ordinary, not something to clamp away.
-        let left = Area { x: -1920.0, y: -200.0, w: 1920.0, h: 1040.0 };
+        let left = Area { x: -1920.0, y: -200.0, w: 1920.0, h: 1080.0 };
+        let left_work = Area { x: -1920.0, y: -200.0, w: 1920.0, h: 1040.0 };
         let p = Placement::default();
-        assert_eq!(placed_origin(&p, (720.0, 320.0), left), (-1920.0 + 24.0, -200.0 + 1040.0 - 320.0));
+        assert_eq!(
+            placed_origin(&p, (720.0, 320.0), left, left_work),
+            (-1920.0 + 24.0, -200.0 + 1080.0 - 320.0)
+        );
     }
 
     #[test]
     fn a_broken_setting_never_places_the_window_at_nan() {
-        let p = Placement {
-            mode: PlacementMode::Custom,
-            offset: (f64::NAN, f64::INFINITY),
-            custom: (f64::NAN, 100.0),
-        };
-        let (x, y) = placed_origin(&p, (720.0, 320.0), work());
+        let p = Placement { mode: PlacementMode::BottomLeft, offset: (f64::NAN, f64::INFINITY), custom: (0.0, 0.0) };
+        let (x, y) = placed_origin(&p, (720.0, 320.0), screen(), work());
         assert!(x.is_finite() && y.is_finite(), "got {x},{y}");
-        assert_eq!(y, 100.0, "the coordinate that was fine is kept");
     }
 
     #[test]
     fn an_unknown_mode_reads_as_the_default() {
         assert_eq!(PlacementMode::parse("bottomLeft"), PlacementMode::BottomLeft);
         assert_eq!(PlacementMode::parse("bottomRight"), PlacementMode::BottomRight);
-        assert_eq!(PlacementMode::parse("custom"), PlacementMode::Custom);
+        assert_eq!(PlacementMode::parse("taskbarLeft"), PlacementMode::TaskbarLeft);
+        assert_eq!(PlacementMode::parse("taskbarRight"), PlacementMode::TaskbarRight);
+        assert_eq!(PlacementMode::parse("topLeft"), PlacementMode::TopLeft);
+        assert_eq!(PlacementMode::parse("topRight"), PlacementMode::TopRight);
         assert_eq!(PlacementMode::parse("topCenter"), PlacementMode::TopCenter);
         // A typo in settings.json must not leave the island unplaced.
         assert_eq!(PlacementMode::parse("bottomleft"), PlacementMode::BottomLeft);
         assert_eq!(PlacementMode::parse(""), PlacementMode::BottomLeft);
+        // The old free position is gone: the island always belongs to an edge.
+        assert_eq!(PlacementMode::parse("custom"), PlacementMode::BottomLeft);
     }
 
     // ── Snapping after a drag ────────────────────────────────────────────────
 
     #[test]
-    fn a_drop_near_the_bottom_left_lands_in_the_bottom_left_corner() {
-        // Island dropped at 30 px from the left, 10 px above the bottom.
-        let p = snapped_placement((30.0, 1040.0 - 320.0 - 10.0, 720.0, 320.0), work());
+    fn a_drop_near_the_bottom_of_the_screen_takes_that_edge() {
+        // Let go 10 px above the bottom of the screen.
+        let p = snapped_placement((30.0, 1080.0 - 320.0 - 10.0, 720.0, 320.0), screen(), work());
         assert_eq!(p.mode, PlacementMode::BottomLeft);
-        assert_eq!(p.offset, (30.0, 10.0));
+        // Flush with the edge, keeping only the distance from the left.
+        assert_eq!(p.offset, (30.0, 0.0));
     }
 
     #[test]
-    fn the_same_drop_on_the_other_half_lands_bottom_right() {
-        let x = 1920.0 - 720.0 - 30.0;
-        let p = snapped_placement((x, 1040.0 - 320.0 - 10.0, 720.0, 320.0), work());
+    fn a_drop_near_the_taskbar_takes_the_taskbar_edge() {
+        // Let go 5 px above the taskbar: nearer that edge than the screen bottom.
+        let p = snapped_placement((30.0, 1040.0 - 320.0 - 5.0, 720.0, 320.0), screen(), work());
+        assert_eq!(p.mode, PlacementMode::TaskbarLeft);
+        assert_eq!(p.offset.1, 0.0, "flush on the taskbar, not hovering above it");
+    }
+
+    #[test]
+    fn a_drop_near_the_top_takes_the_top_edge() {
+        let p = snapped_placement((30.0, 8.0, 720.0, 320.0), screen(), work());
+        assert_eq!(p.mode, PlacementMode::TopLeft);
+        assert_eq!(p.offset.1, 0.0, "flush against the top edge");
+    }
+
+    #[test]
+    fn the_right_half_always_snaps_to_the_right_corner() {
+        let p = snapped_placement((1920.0 - 720.0 - 30.0, 1080.0 - 320.0 - 10.0, 720.0, 320.0), screen(), work());
         assert_eq!(p.mode, PlacementMode::BottomRight);
-        // Close enough to the same gap, measured from the right edge instead.
         assert!((p.offset.0 - 30.0).abs() < 0.001, "got {}", p.offset.0);
-        assert_eq!(p.offset.1, 10.0);
     }
 
     #[test]
-    fn a_drop_in_the_middle_of_the_screen_stays_where_it_was_put() {
-        let p = snapped_placement((600.0, 300.0, 720.0, 320.0), work());
-        assert_eq!(p.mode, PlacementMode::Custom);
-        assert_eq!(p.custom, (600.0, 300.0));
-    }
-
-    #[test]
-    fn a_drop_just_above_the_snap_zone_does_not_snap() {
-        // One pixel further up than the zone allows.
-        let y = 1040.0 - 320.0 - (SNAP_PX + 1.0);
-        assert_eq!(snapped_placement((30.0, y, 720.0, 320.0), work()).mode, PlacementMode::Custom);
-        // And inside it, it does.
-        let y = 1040.0 - 320.0 - SNAP_PX;
-        assert_eq!(snapped_placement((30.0, y, 720.0, 320.0), work()).mode, PlacementMode::BottomLeft);
+    fn nothing_stays_in_the_middle_of_the_screen() {
+        // Let go in the centre: it must still fly to an edge.
+        let p = snapped_placement((600.0, 380.0, 720.0, 320.0), screen(), work());
+        let (_, y) = placed_origin(&p, (720.0, 320.0), screen(), work());
+        assert!(y <= 1.0 || y + 320.0 >= 1039.0, "y was {y}: the panel stayed in the middle");
     }
 
     #[test]
     fn a_snap_round_trips_through_the_geometry() {
-        // What snapping stores is what placing reads back: drop the island,
-        // snap it, place it again, and it lands where it was dropped.
-        let dropped = (30.0, 1040.0 - 320.0 - 10.0, 720.0, 320.0);
-        let p = snapped_placement(dropped, work());
-        assert_eq!(placed_origin(&p, (dropped.2, dropped.3), work()), (dropped.0, dropped.1));
+        // What snapping stores is what placing reads back: the same corner, on
+        // the edge rather than floating above it.
+        let dropped = (30.0, 1080.0 - 320.0 - 10.0, 720.0, 320.0);
+        let p = snapped_placement(dropped, screen(), work());
+        assert_eq!(
+            placed_origin(&p, (dropped.2, dropped.3), screen(), work()),
+            (dropped.0, 1080.0 - 320.0)
+        );
     }
 
     #[test]
     fn snapping_never_writes_a_negative_offset() {
-        // Dragged past the left edge before letting go.
-        let p = snapped_placement((-40.0, 1040.0 - 320.0, 720.0, 320.0), work());
+        let p = snapped_placement((-40.0, 1080.0 - 320.0, 720.0, 320.0), screen(), work());
         assert!(p.offset.0 >= 0.0, "got {}", p.offset.0);
         assert!(p.offset.1 >= 0.0, "got {}", p.offset.1);
+    }
+
+    // ── Above the taskbar, below a fullscreen app ────────────────────────────
+
+    #[test]
+    fn a_fullscreen_window_covers_its_screen() {
+        // 2560×1600 at the origin, as the test machine reports.
+        let screens = [(0, 0, 2560, 1600)];
+        assert!(covers_a_screen((0, 0, 2560, 1600), &screens));
+        // Overshooting counts too: some players hide the cursor by going past.
+        assert!(covers_a_screen((-1, -1, 2561, 1601), &screens));
+    }
+
+    #[test]
+    fn a_maximised_window_does_not_count_as_fullscreen() {
+        // Maximised stops at the work area, above a 48 px taskbar.
+        let screens = [(0, 0, 2560, 1600)];
+        assert!(!covers_a_screen((0, 0, 2560, 1552), &screens));
+        // And so does an ordinary window.
+        assert!(!covers_a_screen((100, 100, 1200, 900), &screens));
+    }
+
+    #[test]
+    fn a_second_screen_is_matched_on_its_own_bounds() {
+        let screens = [(0, 0, 1920, 1080), (1920, 0, 1920, 1080)];
+        assert!(covers_a_screen((1920, 0, 3840, 1080), &screens), "the right-hand one");
+        assert!(!covers_a_screen((960, 0, 2880, 1080), &screens), "spanning two is not covering one");
+    }
+
+    #[test]
+    fn no_screens_means_nothing_is_covered() {
+        assert!(!covers_a_screen((0, 0, 2560, 1600), &[]));
     }
 }
 
@@ -587,15 +625,36 @@ fn top_inset_from(monitor_y: i32, work_y: i32) -> i32 {
     if (0..200).contains(&inset) { inset } else { 0 }
 }
 
-/// Where the island grows from: a corner of the work area, or the middle of its
-/// top edge (what every Coucou before this one did).
+/// Which edge of the display the panel hangs from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Edge {
+    /// The bottom of the screen: the panel covers the taskbar.
+    ScreenBottom,
+    /// The top of the taskbar: the panel sits on it, taskbar still visible.
+    TaskbarTop,
+    /// The top of the screen, where the Mac has its notch.
+    ScreenTop,
+}
+
+/// Which side of that edge the panel is aligned to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Side {
+    Left,
+    Right,
+    Center,
+}
+
+/// Where the island grows from. Every mode names an edge: a panel floating in
+/// the middle of the screen is not one of the choices.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum PlacementMode {
     #[default]
     BottomLeft,
     BottomRight,
-    /// A free position, kept between launches.
-    Custom,
+    TaskbarLeft,
+    TaskbarRight,
+    TopLeft,
+    TopRight,
     TopCenter,
 }
 
@@ -605,10 +664,50 @@ impl PlacementMode {
     pub fn parse(mode: &str) -> PlacementMode {
         match mode {
             "bottomRight" => PlacementMode::BottomRight,
-            "custom" => PlacementMode::Custom,
+            "taskbarLeft" => PlacementMode::TaskbarLeft,
+            "taskbarRight" => PlacementMode::TaskbarRight,
+            "topLeft" => PlacementMode::TopLeft,
+            "topRight" => PlacementMode::TopRight,
             "topCenter" => PlacementMode::TopCenter,
+            // "custom" and anything unknown: the island always belongs to an
+            // edge, so a free position falls back to the default corner.
             _ => PlacementMode::BottomLeft,
         }
+    }
+
+    pub fn edge(self) -> Edge {
+        match self {
+            PlacementMode::BottomLeft | PlacementMode::BottomRight => Edge::ScreenBottom,
+            PlacementMode::TaskbarLeft | PlacementMode::TaskbarRight => Edge::TaskbarTop,
+            PlacementMode::TopLeft | PlacementMode::TopRight | PlacementMode::TopCenter => Edge::ScreenTop,
+        }
+    }
+
+    pub fn side(self) -> Side {
+        match self {
+            PlacementMode::BottomLeft | PlacementMode::TaskbarLeft | PlacementMode::TopLeft => Side::Left,
+            PlacementMode::BottomRight | PlacementMode::TaskbarRight | PlacementMode::TopRight => Side::Right,
+            PlacementMode::TopCenter => Side::Center,
+        }
+    }
+
+    /// The mode for an edge and a side, which is how snapping names a corner.
+    pub fn of(edge: Edge, side: Side) -> PlacementMode {
+        match (edge, side) {
+            (Edge::ScreenBottom, Side::Left) | (Edge::ScreenBottom, Side::Center) => PlacementMode::BottomLeft,
+            (Edge::ScreenBottom, Side::Right) => PlacementMode::BottomRight,
+            (Edge::TaskbarTop, Side::Left) | (Edge::TaskbarTop, Side::Center) => PlacementMode::TaskbarLeft,
+            (Edge::TaskbarTop, Side::Right) => PlacementMode::TaskbarRight,
+            (Edge::ScreenTop, Side::Left) => PlacementMode::TopLeft,
+            (Edge::ScreenTop, Side::Right) => PlacementMode::TopRight,
+            (Edge::ScreenTop, Side::Center) => PlacementMode::TopCenter,
+        }
+    }
+
+    /// True when the panel grows upwards, so its rounded corners are the top
+    /// ones. This is the whole visual difference between the edges.
+    pub fn grows_up(self) -> bool {
+        !matches!(self.edge(), Edge::ScreenTop)
     }
 }
 
@@ -666,28 +765,46 @@ pub const SNAP_PX: f64 = 32.0;
 /// to the work area it was dropped on. Dropped near the bottom edge it snaps to
 /// one of the corners — left or right of the middle, whichever half it is in —
 /// and otherwise stays exactly where it was put.
-pub fn snapped_placement(window: (f64, f64, f64, f64), work: Area) -> Placement {
+pub fn snapped_placement(window: (f64, f64, f64, f64), screen: Area, work: Area) -> Placement {
     let (x, y, w, h) = window;
     let (x, y, w, h) = (finite(x, 0.0), finite(y, 0.0), finite(w, 0.0), finite(h, 0.0));
-    let gap = work.h - (y + h);
-    if gap <= SNAP_PX {
-        // Closer to one corner than the other: the island's middle against the
-        // work area's middle.
-        let left = x + w / 2.0 < work.w / 2.0;
-        Placement {
-            mode: if left { PlacementMode::BottomLeft } else { PlacementMode::BottomRight },
-            offset: (
-                if left { x } else { work.w - x - w }.max(0.0),
-                gap.max(0.0),
-            ),
-            custom: (0.0, 0.0),
+
+    // How far the panel's bottom is from each bottom anchor, and its top from the
+    // top one. Whichever it was let go nearest to is the edge it takes, so a
+    // panel dropped in the middle of the screen flies to an edge instead of
+    // staying there.
+    let to_screen_bottom = (screen.bottom() - (y + h)).abs();
+    let to_taskbar = (work.bottom() - (y + h)).abs();
+    let to_top = (y - screen.y).abs();
+    let mut best = (Edge::ScreenBottom, to_screen_bottom);
+    for (edge, gap) in [(Edge::TaskbarTop, to_taskbar), (Edge::ScreenTop, to_top)] {
+        if gap < best.1 {
+            best = (edge, gap);
         }
+    }
+    let edge = best.0;
+
+    // Left or right of the middle, never the middle itself: the two halves are
+    // what a corner means.
+    let side = if x + w / 2.0 < screen.x + screen.w / 2.0 {
+        Side::Left
     } else {
-        Placement {
-            mode: PlacementMode::Custom,
-            offset: (0.0, 0.0),
-            custom: (x.max(0.0), y.max(0.0)),
-        }
+        Side::Right
+    };
+
+    // The panel keeps its place along the edge it took, but goes flush against
+    // it: keeping the gap as well would leave a panel dropped in the middle of
+    // the screen hovering in the middle of the screen.
+    let offset_x = match side {
+        Side::Left => x - screen.x,
+        _ => screen.right() - (x + w),
+    }
+    .max(0.0);
+
+    Placement {
+        mode: PlacementMode::of(edge, side),
+        offset: (offset_x, 0.0),
+        custom: (0.0, 0.0),
     }
 }
 
@@ -695,21 +812,27 @@ pub fn snapped_placement(window: (f64, f64, f64, f64), work: Area) -> Placement 
 ///
 /// A closed island is smaller than an open one and is placed by the same rule,
 /// so it keeps looking attached to its corner while it grows.
-pub fn placed_origin(p: &Placement, size: (f64, f64), wa: Area) -> (f64, f64) {
+pub fn placed_origin(p: &Placement, size: (f64, f64), screen: Area, work: Area) -> (f64, f64) {
     let (w, h) = (finite(size.0, 0.0), finite(size.1, 0.0));
     let (ox, oy) = (finite(p.offset.0, 0.0), finite(p.offset.1, 0.0));
-    let (cx, cy) = (finite(p.custom.0, 0.0), finite(p.custom.1, 0.0));
-    let (x, y) = match p.mode {
-        // Grows up and to the right.
-        PlacementMode::BottomLeft => (wa.x + ox, wa.bottom() - oy - h),
-        // Grows up and to the left.
-        PlacementMode::BottomRight => (wa.right() - ox - w, wa.bottom() - oy - h),
-        // Grows down and to the right from where the user dropped it.
-        PlacementMode::Custom => (wa.x + cx, wa.y + cy),
-        // Grows down from the middle of the top edge.
-        PlacementMode::TopCenter => (wa.x + (wa.w - w) / 2.0, wa.y),
+    // The bottom of the screen is the whole display, so the panel covers the
+    // taskbar there; the taskbar edge is the work area's bottom, so it sits on
+    // top of the taskbar instead.
+    let area = match p.mode.edge() {
+        Edge::ScreenBottom | Edge::ScreenTop => screen,
+        Edge::TaskbarTop => work,
     };
-    clamp_into_area(x, y, (w, h), wa)
+    let x = match p.mode.side() {
+        Side::Left => area.x + ox,
+        Side::Right => area.right() - ox - w,
+        Side::Center => area.x + (area.w - w) / 2.0,
+    };
+    let y = match p.mode.edge() {
+        // Both bottom anchors grow upwards; the top anchor grows downwards.
+        Edge::ScreenBottom | Edge::TaskbarTop => area.bottom() - oy - h,
+        Edge::ScreenTop => area.y + oy,
+    };
+    clamp_into_area(x, y, (w, h), screen)
 }
 
 /// Keeps the whole window on the display. A window larger than the work area
@@ -752,21 +875,21 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, placement: &Placement, collap
     // it down as before.
     let mp = *m.position();
     let wa = m.work_area();
-    let area = match placement.mode {
-        PlacementMode::BottomLeft | PlacementMode::BottomRight => Area {
-            x: mp.x as f64 / scale,
-            y: mp.y as f64 / scale,
-            w: ms.width as f64 / scale,
-            h: ms.height as f64 / scale,
-        },
-        _ => Area {
-            x: wa.position.x as f64 / scale,
-            y: wa.position.y as f64 / scale,
-            w: wa.size.width as f64 / scale,
-            h: wa.size.height as f64 / scale,
-        },
+    // Both rectangles are absolute in the virtual desktop and arrive in physical
+    // pixels, so they are converted once, here, and everything below is logical.
+    let screen = Area {
+        x: mp.x as f64 / scale,
+        y: mp.y as f64 / scale,
+        w: ms.width as f64 / scale,
+        h: ms.height as f64 / scale,
     };
-    let (lx_pos, ly_pos) = placed_origin(placement, (lw, lh), area);
+    let work = Area {
+        x: wa.position.x as f64 / scale,
+        y: wa.position.y as f64 / scale,
+        w: wa.size.width as f64 / scale,
+        h: wa.size.height as f64 / scale,
+    };
+    let (lx_pos, ly_pos) = placed_origin(placement, (lw, lh), screen, work);
     // The work area is already absolute in the virtual desktop, so the result
     // needs no monitor offset — adding one would count it twice.
     let x = (lx_pos * scale).round() as i32;
@@ -783,13 +906,16 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, placement: &Placement, collap
     let _ = win.set_position(PhysicalPosition::new(x, y));
     crate::log::line(format!(
         "island geometry: mode={:?} work={:.0},{:.0} {:.0}x{:.0} panel={lw:.0}x{lh:.0} at={x},{y} scale={scale}",
-        placement.mode, area.x, area.y, area.w, area.h
+        placement.mode, screen.x, screen.y, screen.w, screen.h
     ));
     let (lx, ly) = logical_origin(&m);
     platform::pin_to_monitor(&win, lx, ly);
     // Moving across displays can rescale the window: re-assert the physical size.
     let _ = win.set_size(PhysicalSize::new(pw, ph));
+    // Above the taskbar; the watcher below takes it out of the topmost band
+    // while a fullscreen app is in front.
     let _ = win.set_always_on_top(true);
+    platform::set_topmost(&win, true);
 
     // On Windows, moving across displays or waking from the strip can clamp or lag
     // the resize. If the physical inner size differs from what was requested, retry once.
@@ -825,6 +951,62 @@ fn current_screen_key(app: &AppHandle) -> Option<(i32, i32, u32, u32, u64)> {
     Some((p.x, p.y + top_inset(&m), size.width, size.height, m.scale_factor().to_bits()))
 }
 
+/// Whether a window's box covers one of these screens edge to edge.
+///
+/// A maximised window stops at the work area, so it never matches; a borderless
+/// fullscreen video does. `screens` is (x, y, width, height) in physical pixels,
+/// the same units Windows reports window rectangles in.
+pub fn covers_a_screen(window: (i32, i32, i32, i32), screens: &[(i32, i32, i32, i32)]) -> bool {
+    let (l, t, r, b) = window;
+    screens
+        .iter()
+        .any(|(x, y, w, h)| l <= *x && t <= *y && r >= x + w && b >= y + h)
+}
+/// Keeps the island above the taskbar without covering fullscreen apps.
+///
+/// Twice a second is enough: the island is either visible or it is not, and a
+/// fullscreen video that starts a moment ago is still fullscreen a moment later.
+/// A question waiting for an answer overrides the whole thing — a prompt nobody
+/// can see is a prompt that times out.
+pub fn spawn_topmost_watch(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(500));
+        let Some(win) = window(&app) else { continue };
+        if !win.is_visible().unwrap_or(false) {
+            continue;
+        }
+        let waiting = app
+            .try_state::<crate::dsh::Dsh>()
+            .map(|d| {
+                let snapshot = d.0.lock().unwrap_or_else(|e| e.into_inner());
+                !snapshot.pending.is_empty()
+            })
+            .unwrap_or(false);
+        let mut own: Vec<isize> = Vec::new();
+        if let Ok(raw) = win.hwnd() {
+            own.push(raw.0 as isize);
+        }
+        let covered = if waiting {
+            false
+        } else {
+            let screens: Vec<(i32, i32, i32, i32)> = app
+                .available_monitors()
+                .map(|ms| {
+                    ms.iter()
+                        .map(|m| {
+                            let p = m.position();
+                            let s = m.size();
+                            (p.x, p.y, s.width as i32, s.height as i32)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            platform::foreground_box(&own)
+                .is_some_and(|box_| covers_a_screen(box_, &screens))
+        };
+        platform::set_topmost(&win, !covered);
+    });
+}
 /// Emits `cursor` (window-logical coordinates) at ~60 Hz while the island is
 /// visible. Parked on a condvar the rest of the time.
 pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {

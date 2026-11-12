@@ -243,6 +243,16 @@ fn snap_island_placement(app: AppHandle, shared: State<Shared>) -> settings::Isl
         Some(m) => {
             let scale = m.scale_factor();
             let wa = m.work_area();
+            let mp = m.position();
+            let ms = m.size();
+            // The stored position is measured from the screen's origin, so both
+            // rectangles are converted to logical pixels first.
+            let screen = island::Area {
+                x: mp.x as f64 / scale,
+                y: mp.y as f64 / scale,
+                w: ms.width as f64 / scale,
+                h: ms.height as f64 / scale,
+            };
             let work = island::Area {
                 x: wa.position.x as f64 / scale,
                 y: wa.position.y as f64 / scale,
@@ -250,17 +260,20 @@ fn snap_island_placement(app: AppHandle, shared: State<Shared>) -> settings::Isl
                 h: wa.size.height as f64 / scale,
             };
             let window = (
-                (pos.x - wa.position.x) as f64 / scale,
-                (pos.y - wa.position.y) as f64 / scale,
+                pos.x as f64 / scale - screen.x,
+                pos.y as f64 / scale - screen.y,
                 size.width as f64 / scale,
                 size.height as f64 / scale,
             );
-            let snapped = island::snapped_placement(window, work);
+            let snapped = island::snapped_placement(window, screen, work);
             settings::IslandPlacement {
                 mode: match snapped.mode {
                     island::PlacementMode::BottomLeft => "bottomLeft",
                     island::PlacementMode::BottomRight => "bottomRight",
-                    island::PlacementMode::Custom => "custom",
+                    island::PlacementMode::TaskbarLeft => "taskbarLeft",
+                    island::PlacementMode::TaskbarRight => "taskbarRight",
+                    island::PlacementMode::TopLeft => "topLeft",
+                    island::PlacementMode::TopRight => "topRight",
                     island::PlacementMode::TopCenter => "topCenter",
                 }
                 .into(),
@@ -1252,6 +1265,7 @@ pub fn run() {
             }
             gate.set_active(true);
             island::spawn_cursor_poll(handle.clone(), gate.clone());
+    island::spawn_topmost_watch(handle.clone());
 
             log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION")));
             hooks::ensure_hook_exe(&handle);
