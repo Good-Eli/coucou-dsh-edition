@@ -779,7 +779,8 @@ impl PlacementMode {
 
     /// True when the panel grows upwards, so its rounded corners are the top
     /// ones. This is the whole visual difference between the edges.
-    pub fn grows_up(self) -> bool {
+    #[cfg(test)]
+pub fn grows_up(self) -> bool {
         !matches!(self.edge(), Edge::ScreenTop)
     }
 }
@@ -829,9 +830,6 @@ pub fn placement_of(p: &crate::settings::IslandPlacement) -> Placement {
         custom: (p.custom_x, p.custom_y),
     }
 }
-/// How close to the bottom of the work area counts as "put it in the corner".
-pub const SNAP_PX: f64 = 32.0;
-
 /// Where a drag left the island, expressed as a setting.
 ///
 /// `window` is the island's top-left corner and size in logical pixels relative

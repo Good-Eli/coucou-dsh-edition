@@ -17,9 +17,6 @@ pub const PLUGIN_ID_PREFIX: &str = "coucou-dsh-bridge";
 /// it is and that deleting it is a supported way to undo the install.
 pub const MARKER: &str = "# Coucou island bridge (personal DSH Edition). Remove this block to revert.";
 
-/// What the plugin needs beside itself to run.
-pub const MODULES: [&str; 3] = ["bridge.mjs", "secure-pipe.mjs", "state-acl.mjs"];
-
 /// One line of the patch file, kept with its ending so a rewrite is byte-exact.
 fn split_lines(text: &str) -> Vec<String> {
     text.split_inclusive('\n').map(str::to_string).collect()
