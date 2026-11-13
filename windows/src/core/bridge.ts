@@ -352,6 +352,19 @@ export const Bridge = {
     ),
   /** Re-applies the island's geometry from the current settings. */
   repositionIsland: () => call<void>("reposition"),
+  /** Whether the DSH bridge plugin is installed, and where. */
+  dshPluginStatus: () =>
+    call<{
+      installed: boolean;
+      profile: string | null;
+      pluginDir: string;
+      connected: boolean;
+      problem: string | null;
+    }>("dsh_plugin_status"),
+  /** Writes the plugin and adds it to the DSH profile. */
+  dshPluginInstall: () => call<unknown>("dsh_plugin_install"),
+  /** Takes the plugin out of the DSH profile. */
+  dshPluginRemove: () => call<unknown>("dsh_plugin_remove"),
   /** The island's top-left corner, in logical pixels. */
   islandPosition: () => call<[number, number] | null>("island_position"),
   /** Moves the island so its top-left corner lands on these logical pixels. */

@@ -23,6 +23,7 @@ import { startHub, type PageId } from "../hub/shell";
 import { FLOW_PAGE_RENDERERS } from "../hub/pages";
 import { claudeModelControl } from "./claude-models";
 import { agentsSection } from "./agents";
+import { dshBridgeSection } from "./dsh";
 import { phoneSection } from "./phone";
 import { whatsappSection } from "./whatsapp";
 import { WHATSAPP_ID } from "../core/whatsapp";
@@ -1509,7 +1510,7 @@ async function render() {
   const sections: Partial<Record<PageId, () => HTMLElement[]>> = {
     general: () => [generalSection()],
     pills: () => [activePillsSection(connected)],
-    agents: () => [claudeSection(status), agentsSection(agents), planSection(status)],
+    agents: () => [claudeSection(status), agentsSection(agents), dshBridgeSection(), planSection(status)],
     chat: () => [subscriptionsSection(), apiSection(hasKey, claudeRelay), chatProvidersSection(chatKeys, keyChanged), localSection(customKey)],
     integrations: () => [integrationsSection(present), ...whatsappSections()],
     phone: () => [phoneSection(settings.phoneLink ?? false, toggle, settings)],

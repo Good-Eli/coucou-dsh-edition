@@ -483,6 +483,33 @@ fn open_claude_desktop() -> bool {
     platform::open_claude_desktop()
 }
 
+/// What the DSH plugin section of the settings shows.
+#[tauri::command]
+fn dsh_plugin_status(app: AppHandle) -> dsh::install::Status {
+    dsh::install::status(bridge_connected(&app))
+}
+
+/// Writes the bridge modules and asks DSH to load them.
+#[tauri::command]
+fn dsh_plugin_install(app: AppHandle) -> Result<dsh::install::Status, String> {
+    let status = dsh::install::apply()?;
+    Ok(dsh::install::Status { connected: bridge_connected(&app), ..status })
+}
+
+/// Takes the bridge out of the DSH profile again.
+#[tauri::command]
+fn dsh_plugin_remove(app: AppHandle) -> Result<dsh::install::Status, String> {
+    let status = dsh::install::remove()?;
+    Ok(dsh::install::Status { connected: bridge_connected(&app), ..status })
+}
+
+/// Whether the bridge is talking to us right now.
+fn bridge_connected(app: &AppHandle) -> bool {
+    app.try_state::<dsh::Dsh>()
+        .map(|d| d.0.lock().unwrap_or_else(|e| e.into_inner()).status == "ready")
+        .unwrap_or(false)
+}
+
 /// The approval card's "Open DSH": brings DeepSeek Harness's window to the front.
 ///
 /// False when no DSH window exists — the caller then says so instead of closing
@@ -1078,6 +1105,9 @@ pub fn run() {
             open_session,
             open_claude_desktop,
             open_dsh_window,
+            dsh_plugin_status,
+            dsh_plugin_install,
+            dsh_plugin_remove,
             open_file_in_vscode,
             quit_app,
             hooks_status,

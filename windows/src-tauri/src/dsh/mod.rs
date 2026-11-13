@@ -10,6 +10,7 @@
 // by an explicit click on a card that belongs to a specific request.
 
 pub mod client;
+pub mod install;
 pub mod protocol;
 pub mod wire;
 
