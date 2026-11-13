@@ -12,7 +12,7 @@ import { registerShortcutHandlers } from "./island/shortcuts";
 import { registerVoiceHandlers } from "./island/voice";
 import { applySpotify, registerSpotifyHandlers } from "./island/spotify";
 import { registerWhatsAppHandlers } from "./island/whatsapp";
-import { refreshDsh, registerDshHandlers } from "./island/dsh";
+import { logPills, refreshDsh, registerDshHandlers } from "./island/dsh";
 import { SPOTIFY_ID } from "./core/spotify";
 import { Recap } from "./recap/recap";
 import { Updates } from "./island/update";
@@ -171,6 +171,8 @@ async function main() {
   registerSpotifyHandlers(island);
   registerWhatsAppHandlers(island);
   registerDshHandlers(island);
+  // What the island is actually showing, once, so a stray pill can be named.
+  logPills();
   // New versions: Rust offers the card, the island opens it when nothing else waits.
   await Updates.register(island);
   // Rust may have read Spotify before this page listened: ask once.

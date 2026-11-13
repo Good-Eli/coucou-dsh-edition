@@ -224,8 +224,27 @@ export function refreshDsh() {
  * The pill exists only while DSH is live: a bridge that is off, connecting or
  * failing has nothing to show, and a stale pill would claim otherwise.
  */
+/** The last pill list written to the log, so only changes reach it. */
+let lastPillList: string | null = null;
+
+/**
+ * Writes the pill list to the log when it changes.
+ *
+ * "There are two DSH pills and I do not know where the second came from" is not
+ * answerable from a screenshot: the ids say which one the bridge owns and which
+ * one something else put there. Logged here rather than in the state module,
+ * because this is where a transport is already in hand.
+ */
+export function logPills() {
+  const line = State.tasks.map((t) => `${t.id}(${t.name})`).join(", ");
+  if (line === lastPillList) return;
+  lastPillList = line;
+  void Bridge.log(`pills: ${line || "(none)"}`);
+}
+
 export function syncTask() {
   const snapshot = Dsh.snapshot;
+  logPills();
   const definition = pillDefinition(DSH_PILL_ID);
   const index = State.tasks.findIndex((task) => task.id === DSH_PILL_ID);
 

@@ -459,6 +459,7 @@ class AppState {
    * of the others — a pill that is mid-session stays until its session ends.
    * Safe to call any number of times. AppState.loadIntegrationTasks on macOS.
    */
+
   loadIntegrationTasks() {
     const d = sanitizeDeclared(this.settings, this.os);
     this.settings.mainPill = d.mainPill;
