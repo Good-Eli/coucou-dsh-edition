@@ -128,7 +128,21 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const tabChat = h("button", { class: "tab", title: tl("Ask"), onclick: () => go("prompt") }, svg(ICONS.bubbleRound, 19));
   const tabDrop = h("button", { class: "tab", title: tl("Drop"), onclick: () => go("upload") }, svg(ICONS.plus, 16));
 
-  const gearBtn = h("button", { title: tl("Settings"), onclick: () => go("settings") }, svg(ICONS.gearLine, 18, { stroke: 1.6 }));
+  // The gear is a toggle, like the wardrobe: pressing it while the settings are
+  // open goes back to the view the island was on before, so the same button
+  // both opens and closes them.
+  const gearBtn = h(
+    "button",
+    {
+      title: tl("Settings"),
+      onclick: () => {
+        actions.blip();
+        if (State.view === "settings") actions.setView(State.defaultView());
+        else actions.setView("settings");
+      },
+    },
+    svg(ICONS.gearLine, 18, { stroke: 1.6 }),
+  );
   const soundBtn = h("button", { title: tl("Mute"), onclick: () => actions.toggleSound() }, svg(ICONS.speakerLine, 18, { stroke: 1.6 }));
   // Folds back to the compact island now, without waiting for the timer (the
   // Mac's ✕). A card waiting for an answer keeps the island open: no ✕ then.
