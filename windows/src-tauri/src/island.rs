@@ -586,6 +586,38 @@ mod zoom_tests {
         assert!(!covers_a_screen((0, 0, 2560, 1600), &[]));
     }
 
+    #[test]
+    fn a_remote_desktop_session_counts_as_fullscreen() {
+        // A fullscreen RDP session draws its connection bar across the top, so
+        // its window stops short of the screen edge by a dozen pixels. Judged
+        // exactly it would not be fullscreen, and the island sat on top of it.
+        let screens = [(0, 0, 2560, 1600)];
+        assert!(
+            covers_a_screen((0, 12, 2560, 1600), &screens),
+            "the connection bar leaves a strip at the top"
+        );
+        assert!(
+            covers_a_screen((0, 0, 2560, 1588), &screens),
+            "and a strip at the bottom, for a session that shows its own status bar"
+        );
+    }
+
+    #[test]
+    fn a_maximised_window_is_still_not_fullscreen() {
+        // The taskbar is 48 px, well past the slack forgiven for a connection
+        // bar: a maximised window must not hide the island.
+        let screens = [(0, 0, 2560, 1600)];
+        assert!(!covers_a_screen((0, 0, 2560, 1552), &screens));
+        assert!(!covers_a_screen((0, 48, 2560, 1600), &screens), "nor started below it");
+    }
+
+    #[test]
+    fn slack_does_not_make_a_small_window_fullscreen() {
+        let screens = [(0, 0, 2560, 1600)];
+        assert!(!covers_a_screen((0, 0, 1280, 800), &screens), "half a screen is not a screen");
+        assert!(!covers_a_screen((0, 0, 2500, 1600), &screens), "60 px short on the right is not");
+    }
+
     // ── Where the mouse belongs to the island ────────────────────────────────
 
     /// The panel as the page reports it: 640×240 pinned to the bottom of a
@@ -992,16 +1024,29 @@ fn current_screen_key(app: &AppHandle) -> Option<(i32, i32, u32, u32, u64)> {
     Some((p.x, p.y + top_inset(&m), size.width, size.height, m.scale_factor().to_bits()))
 }
 
+/// How far a window may fall short of a screen's edge and still count as
+/// covering it.
+///
+/// A remote desktop session draws its connection bar across the top of the
+/// screen, so its window is a dozen pixels short and an exact comparison would
+/// call the session "not fullscreen" — and the island would sit on top of it.
+/// A maximised window is stopped by the taskbar and misses by far more than
+/// this, so it still does not count.
+pub const FULLSCREEN_SLACK: i32 = 32;
+
 /// Whether a window's box covers one of these screens edge to edge.
 ///
 /// A maximised window stops at the work area, so it never matches; a borderless
-/// fullscreen video does. `screens` is (x, y, width, height) in physical pixels,
-/// the same units Windows reports window rectangles in.
+/// fullscreen video does, and so does a remote desktop session, whose connection
+/// bar leaves a strip that [`FULLSCREEN_SLACK`] forgives. `screens` is
+/// (x, y, width, height) in physical pixels, the same units Windows reports
+/// window rectangles in.
 pub fn covers_a_screen(window: (i32, i32, i32, i32), screens: &[(i32, i32, i32, i32)]) -> bool {
     let (l, t, r, b) = window;
-    screens
-        .iter()
-        .any(|(x, y, w, h)| l <= *x && t <= *y && r >= x + w && b >= y + h)
+    let slack = FULLSCREEN_SLACK;
+    screens.iter().any(|(x, y, w, h)| {
+        l <= *x + slack && t <= *y + slack && r >= x + w - slack && b >= y + h - slack
+    })
 }
 /// Keeps the island above the taskbar without covering fullscreen apps.
 ///
@@ -1009,43 +1054,72 @@ pub fn covers_a_screen(window: (i32, i32, i32, i32), screens: &[(i32, i32, i32, 
 /// fullscreen video that starts a moment ago is still fullscreen a moment later.
 /// A question waiting for an answer overrides the whole thing — a prompt nobody
 /// can see is a prompt that times out.
+///
+/// While a fullscreen app is in front the island is hidden outright, not merely
+/// dropped out of the topmost band: a remote desktop session fills the screen
+/// and the island would otherwise still show over it, which is exactly what a
+/// fullscreen session is supposed to cover.
 pub fn spawn_topmost_watch(app: AppHandle) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_millis(500));
-        let Some(win) = window(&app) else { continue };
-        if !win.is_visible().unwrap_or(false) {
-            continue;
-        }
-        let waiting = app
-            .try_state::<crate::dsh::Dsh>()
-            .map(|d| {
-                let snapshot = d.0.lock().unwrap_or_else(|e| e.into_inner());
-                !snapshot.pending.is_empty()
-            })
-            .unwrap_or(false);
-        let mut own: Vec<isize> = Vec::new();
-        if let Ok(raw) = win.hwnd() {
-            own.push(raw.0 as isize);
-        }
-        let covered = if waiting {
-            false
-        } else {
-            let screens: Vec<(i32, i32, i32, i32)> = app
-                .available_monitors()
-                .map(|ms| {
-                    ms.iter()
-                        .map(|m| {
-                            let p = m.position();
-                            let s = m.size();
-                            (p.x, p.y, s.width as i32, s.height as i32)
-                        })
-                        .collect()
+    std::thread::spawn(move || {
+        // Only the island hidden by this loop is shown again by it: an island
+        // the page folded away stays folded.
+        let mut hidden_here = false;
+        // Logged when it changes, not every tick: this is the line to read when
+        // the island is somewhere it should not be.
+        let mut last_said: Option<bool> = None;
+        loop {
+            std::thread::sleep(Duration::from_millis(500));
+            let Some(win) = window(&app) else { continue };
+            if !hidden_here && !win.is_visible().unwrap_or(false) {
+                continue;
+            }
+            let waiting = app
+                .try_state::<crate::dsh::Dsh>()
+                .map(|d| {
+                    let snapshot = d.0.lock().unwrap_or_else(|e| e.into_inner());
+                    !snapshot.pending.is_empty()
                 })
-                .unwrap_or_default();
-            platform::foreground_box(&own)
-                .is_some_and(|box_| covers_a_screen(box_, &screens))
-        };
-        platform::set_topmost(&win, !covered);
+                .unwrap_or(false);
+            let mut own: Vec<isize> = Vec::new();
+            if let Ok(raw) = win.hwnd() {
+                own.push(raw.0 as isize);
+            }
+            let covered = if waiting {
+                false
+            } else {
+                let screens: Vec<(i32, i32, i32, i32)> = app
+                    .available_monitors()
+                    .map(|ms| {
+                        ms.iter()
+                            .map(|m| {
+                                let p = m.position();
+                                let s = m.size();
+                                (p.x, p.y, s.width as i32, s.height as i32)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                platform::foreground_box(&own)
+                    .is_some_and(|box_| covers_a_screen(box_, &screens))
+            };
+            if last_said != Some(covered) {
+                crate::log::line(format!(
+                    "fullscreen watch: covered={covered} waiting={waiting} screens={}",
+                    app.available_monitors().map(|m| m.len()).unwrap_or(0)
+                ));
+                last_said = Some(covered);
+            }
+            if covered {
+                if !hidden_here {
+                    let _ = win.hide();
+                    hidden_here = true;
+                }
+            } else if hidden_here {
+                let _ = win.show();
+                hidden_here = false;
+            }
+            platform::set_topmost(&win, !covered);
+        }
     });
 }
 /// Emits `cursor` (window-logical coordinates) at ~60 Hz while the island is
