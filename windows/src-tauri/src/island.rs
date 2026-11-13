@@ -585,6 +585,47 @@ mod zoom_tests {
     fn no_screens_means_nothing_is_covered() {
         assert!(!covers_a_screen((0, 0, 2560, 1600), &[]));
     }
+
+    // ── Where the mouse belongs to the island ────────────────────────────────
+
+    /// The panel as the page reports it: 640×240 pinned to the bottom of a
+    /// 720×320 window, so the strip above it is empty canvas.
+    fn panel() -> IslandRect {
+        IslandRect { x: 0.0, y: 80.0, w: 640.0, h: 240.0 }
+    }
+
+    #[test]
+    fn a_point_over_the_panel_is_the_islands() {
+        assert!(accepts_cursor(panel(), 320.0, 200.0));
+        assert!(accepts_cursor(panel(), 1.0, 319.0));
+    }
+
+    #[test]
+    fn a_point_beside_the_panel_is_not() {
+        // To the right of the 640-wide panel: 720 - 640 = 80 px of empty canvas.
+        assert!(!accepts_cursor(panel(), 700.0, 200.0));
+        // Above it.
+        assert!(!accepts_cursor(panel(), 320.0, 20.0));
+    }
+
+    #[test]
+    fn a_right_hand_panel_is_hit_where_it_is_drawn() {
+        // Pinned right: x = 720 - 640 = 80. The old centred rectangle put the
+        // hit area 80 px to the left, so the right edge of the panel missed and
+        // the empty strip on the left answered instead.
+        let right = IslandRect { x: 80.0, y: 80.0, w: 640.0, h: 240.0 };
+        assert!(accepts_cursor(right, 719.0, 200.0), "the right edge belongs to the panel");
+        assert!(!accepts_cursor(right, 40.0, 200.0), "the empty strip does not");
+    }
+
+    #[test]
+    fn an_empty_rectangle_still_takes_the_mouse() {
+        // Before the page has reported a size, the window is the island. Saying
+        // no here made the whole island click-through, and clicks fell to the
+        // window behind it.
+        assert!(accepts_cursor(IslandRect::default(), 10.0, 10.0));
+        assert!(accepts_cursor(IslandRect { x: 0.0, y: 0.0, w: 640.0, h: 0.0 }, 10.0, 10.0));
+    }
 }
 
 
@@ -1076,12 +1117,7 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                 // Click-through: the window only takes the mouse over the island
                 // shape. A small entry margin means the flag is already off by the
                 // time a moving cursor reaches a button.
-                let r = *gate.rect.lock().unwrap();
-                let on_island = r.w > 0.0
-                    && x >= r.x - HIT_MARGIN
-                    && x <= r.x + r.w + HIT_MARGIN
-                    && y >= r.y - HIT_MARGIN
-                    && y <= r.y + r.h + HIT_MARGIN;
+                let on_island = accepts_cursor(*gate.rect.lock().unwrap(), x, y);
 
                 // A file being dragged has to be able to find us. WS_EX_TRANSPARENT
                 // — what click-through is on Windows — hides the window from
@@ -1131,6 +1167,21 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
     });
 }
 
+/// Whether a point in window coordinates belongs to the island.
+///
+/// A rectangle that has not arrived yet — or arrived empty during a transition —
+/// must not make the open island click-through: the window is the island's own,
+/// so taking the whole of it is the safe answer. Answering "no" there was a
+/// window that took no clicks and let them fall to whatever was behind it.
+pub fn accepts_cursor(r: IslandRect, x: f64, y: f64) -> bool {
+    if r.w <= 0.0 || r.h <= 0.0 {
+        return true;
+    }
+    x >= r.x - HIT_MARGIN
+        && x <= r.x + r.w + HIT_MARGIN
+        && y >= r.y - HIT_MARGIN
+        && y <= r.y + r.h + HIT_MARGIN
+}
 /// The cursor is on the folded window: it takes the mouse, and the page hears
 /// `closed-hover` (it opens the compact island).
 fn wake_if_hovered(app: &AppHandle, gate: &PollGate) {

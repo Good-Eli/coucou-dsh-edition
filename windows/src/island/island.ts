@@ -915,11 +915,6 @@ export class Island {
     this.ensureRunning();
   }
 
-  /// Whether the panel grows upwards, from the bottom of the screen or the
-  /// taskbar. The top edge grows downwards, as it always did.
-  private get placeFromBottom() {
-    return growsUp(State.settings.placement?.mode ?? "");
-  }
 
   /// One class on `body` says which edges the panel is anchored to, so the CSS
   /// can mirror the shape without every rule asking about settings.
@@ -971,21 +966,22 @@ export class Island {
     this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
     this.uploadCanvas.el.style.left = `${(w - EXPANDED_W) / 2}px`;
 
-    const viewportW = window.innerWidth > 0 ? window.innerWidth : PANEL_W;
-    const viewportH = window.innerHeight > 0 ? window.innerHeight : 0;
-    // A panel anchored to the bottom of the window keeps its lower edge there;
-    // one anchored to the top starts at the top. The window is sized to the
-    // panel, so this only shows while the panel is still growing.
-    const originY = this.placeFromBottom ? Math.max(0, viewportH - hh) : 0;
-    // Where the panel actually sits inside the window, side included: the panel
-    // is pinned to the right for the right-hand placements, so a rectangle
-    // centred here put the hit area (and the click-through region built from it)
-    // over empty space on the right of the screen and over nothing on the left.
-    const originX = centred ? (viewportW - w) / 2 : right ? Math.max(0, viewportW - w) : 0;
-    const rect = { x: originX, y: originY, w, h: hh };
+    // Where the panel really is, asked of the DOM rather than worked out from
+    // the window's size. The window is a fixed 720×320 canvas and the panel is
+    // smaller and pinned to one edge of it, so a rectangle derived from
+    // `innerHeight`/`innerWidth` and a guessed anchor drifts out of step with
+    // what is on screen — and this rectangle is the hit area: when it drifts,
+    // clicks land on whatever is behind the island instead of on the island.
+    const box = this.islandEl.getBoundingClientRect();
+    const rect = { x: box.left, y: box.top, w: box.width, h: box.height };
     this.islandBox = rect;
     const p = this.pushedRect;
-    if (Math.abs(p.x - rect.x) > 0.5 || Math.abs(p.w - rect.w) > 0.5 || Math.abs(p.h - rect.h) > 0.5) {
+    if (
+      Math.abs(p.x - rect.x) > 0.5 ||
+      Math.abs(p.y - rect.y) > 0.5 ||
+      Math.abs(p.w - rect.w) > 0.5 ||
+      Math.abs(p.h - rect.h) > 0.5
+    ) {
       this.pushedRect = rect;
       void Bridge.setIslandRect(rect.x, rect.y, rect.w, rect.h);
     }
@@ -1489,15 +1485,17 @@ export class Island {
         this.engine.slotHVel = 0;
       }
     }
-    // Only the main Mochi is dressed — the one of the main tool's pill (Settings →
-    // Active pills): a focused integration pill shows its own colours, unless
-    // the wardrobe is open (BotCanvasView.showOutfit, macOS).
+    // Mochi keeps what the user dressed him in, whichever pill is focused.
+    //
+    // The macOS port hides the outfit while an integration pill is focused
+    // (BotCanvasView.showOutfit) so that pill's own colours show through. That
+    // reads as the hat vanishing the moment you look at another pill, which is
+    // not what a wardrobe should do: the hat stays on, and switching pills
+    // changes the pill, not the character.
     // In the wardrobe the hovered outfit swaps in at once, without the drop-in.
     const inWardrobe = State.mode === "expanded" && State.view === "wardrobe";
-    const mainFocused = State.focusId == null || State.focusId === State.mainPillId;
-    const showOutfit = mainFocused || State.mode !== "expanded" || inWardrobe;
     const outfit = State.wardrobePreview ?? this.seasons.get(parseOutfit(State.settings.mochiOutfit));
-    this.engine.setOutfit(showOutfit ? outfit : "none", !inWardrobe);
+    this.engine.setOutfit(outfit, !inWardrobe);
     // Dances while music plays: always in the compact island, expanded only on
     // the music pill's card (BotCanvasView, macOS). Asked every frame.
     this.engine.setDancing(islandDances({
