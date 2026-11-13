@@ -186,8 +186,14 @@ export function showsUpdateHint(waiting: boolean, state: BotStateName, pending: 
 
 /** The release page of this version, for "All changes". */
 export function releasePage(platform: "windows" | "linux", version: string): string {
-  return `https://github.com/Louis-CFM/coucou/releases/tag/${platform}-v${encodeURIComponent(version)}`;
+  // This build's own repository, not the original Coucou's: opening the
+  // upstream release page from a fork sends the reader to a project that does
+  // not contain what they are reading about.
+  return `https://github.com/${FORK_REPO}/releases/tag/${platform}-v${encodeURIComponent(version)}`;
 }
+
+/** Where this build publishes, matching `FORK_REPO` in `src-tauri/src/update.rs`. */
+export const FORK_REPO = "Good-Eli/coucou-dsh-edition";
 
 /** Buy Mochi a coffee: the same Stripe link as the Coucou page (docs/index.html). */
 export const COFFEE_URL = "https://buy.stripe.com/dRm6oGbfa7Kqcqs0hxes003";

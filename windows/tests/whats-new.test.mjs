@@ -9,7 +9,7 @@ import { NO_UPDATE } from "../src/core/update.ts";
 import { BotEngine } from "../src/mochi/engine.ts";
 import { WHATS_NEW_ICONS } from "../src/whats-new/icons.ts";
 import {
-  COFFEE_URL, ICON_NAMES, LATER_MS, compareVersions, decideOnLaunch, iconName, localized, releaseFor,
+  COFFEE_URL, FORK_REPO, ICON_NAMES, LATER_MS, compareVersions, decideOnLaunch, iconName, localized, releaseFor,
   releasePage, showsUpdateHint, soFar, updateWaiting, usedBefore,
 } from "../src/whats-new/whats-new.ts";
 
@@ -154,8 +154,11 @@ test("the blue only when Mochi has nothing else to say", () => {
 });
 
 test("All changes and the coffee", () => {
-  assert.equal(releasePage("windows", "0.5.2"), "https://github.com/Louis-CFM/coucou/releases/tag/windows-v0.5.2");
-  assert.equal(releasePage("linux", "0.5.2"), "https://github.com/Louis-CFM/coucou/releases/tag/linux-v0.5.2");
+  assert.equal(releasePage("windows", "0.5.2"), `https://github.com/${FORK_REPO}/releases/tag/windows-v0.5.2`);
+  assert.equal(releasePage("linux", "0.5.2"), `https://github.com/${FORK_REPO}/releases/tag/linux-v0.5.2`);
+  // This build's own repository: an upstream link would send the reader to a
+  // project that does not contain what they are reading about.
+  assert.ok(!releasePage("windows", "0.5.2").includes("Louis-CFM/coucou"), "not the original");
   const site = readFileSync(new URL("../../docs/index.html", import.meta.url), "utf8");
   assert.ok(site.includes(COFFEE_URL), "the same link as the Coucou page");
 });

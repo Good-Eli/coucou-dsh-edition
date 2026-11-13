@@ -5,7 +5,8 @@
 // (again a day later at most if the card was left unanswered), or Settings →
 // General → Updates. "Check now" is a click, so it works either way. Once
 // allowed, Coucou looks at launch and every 6 hours: one unauthenticated
-// `GET /repos/Louis-CFM/coucou/releases`, no cookies, nothing about the user.
+// `GET /repos/<FORK_REPO>/releases`, no cookies, nothing about the user. The
+// repository is this fork's own, never upstream's — see [`FORK_REPO`].
 //
 // Windows: the installer this copy came from — the per-user setup.exe in
 // %LOCALAPPDATA%\Coucou, the per-machine .msi under Program Files — is
@@ -29,9 +30,39 @@ use tauri::{AppHandle, Emitter};
 use crate::i18n::t;
 use crate::island::WINDOW_LABEL;
 
-pub const RELEASES_URL: &str = "https://api.github.com/repos/Louis-CFM/coucou/releases?per_page=30";
+/// Whose releases this build may install.
+///
+/// **This is the DSH Edition, a personal fork, so it must never take an update
+/// from upstream.** An update replaces the installed application, so an upstream
+/// one would quietly turn this fork back into the original Coucou — losing the
+/// DSH bridge and everything built on it. The repository named here is the
+/// fork's own; with no releases published it simply never finds one.
+pub const FORK_REPO: &str = "Good-Eli/coucou-dsh-edition";
+
+/// The repository the original Coucou publishes to. Named only so a test can
+/// prove this build never asks it for anything.
+pub const UPSTREAM_REPO: &str = "Louis-CFM/coucou";
+
+/// The repository to ask, overridable for a build that wants another one.
+///
+/// A function rather than a constant so the answer can be checked in a test, and
+/// so a build can be pointed elsewhere without editing the source.
+pub fn repo() -> String {
+    match std::env::var("COUCOU_UPDATE_REPO") {
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => FORK_REPO.to_string(),
+    }
+}
+
+/// Where releases are listed, for the HTTP request.
+pub fn releases_url() -> String {
+    format!("https://api.github.com/repos/{}/releases?per_page=30", repo())
+}
+
 /// Where "What's new" goes when no release is known.
-pub const RELEASES_PAGE: &str = "https://github.com/Louis-CFM/coucou/releases";
+pub fn releases_page() -> String {
+    format!("https://github.com/{}/releases", repo())
+}
 
 /// This platform's release tags: `windows-vX.Y.Z` / `linux-vX.Y.Z`. Never the
 /// rolling `windows-latest` / `linux-latest`, nor the Mac's `v…` or Android's.
@@ -528,7 +559,7 @@ fn github_client(timeout: Duration) -> Result<reqwest::Client, String> {
 
 async fn fetch_latest() -> Result<Option<Release>, String> {
     let response = github_client(Duration::from_secs(30))?
-        .get(RELEASES_URL)
+        .get(releases_url())
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
@@ -810,12 +841,44 @@ pub fn update_install(app: AppHandle) {
 #[tauri::command]
 pub fn update_open_page() {
     let page = state().latest.as_ref().map(|r| r.page_url.clone()).filter(|u| allowed_url(u));
-    crate::platform::open_url(page.as_deref().unwrap_or(RELEASES_PAGE));
+    crate::platform::open_url(page.as_deref().unwrap_or(&releases_page()));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Whose releases this build trusts ─────────────────────────────────────
+
+    /// The one thing this build must never do is install an update from
+    /// upstream: that would replace the fork with the original Coucou.
+    #[test]
+    fn this_build_never_asks_upstream_for_an_update() {
+        let url = releases_url();
+        assert!(
+            !url.contains(UPSTREAM_REPO),
+            "an update from upstream would turn this fork back into the original: {url}"
+        );
+        assert!(!releases_page().contains(UPSTREAM_REPO), "nor link to its releases");
+    }
+
+    #[test]
+    fn the_default_source_is_the_forks_own_repository() {
+        assert_eq!(FORK_REPO, "Good-Eli/coucou-dsh-edition");
+        assert_ne!(FORK_REPO, UPSTREAM_REPO, "the fork is not the original");
+        if std::env::var("COUCOU_UPDATE_REPO").is_err() {
+            assert!(releases_url().contains("Good-Eli/coucou-dsh-edition"));
+            assert!(releases_page().starts_with("https://github.com/Good-Eli/coucou-dsh-edition/"));
+        }
+    }
+
+    #[test]
+    fn the_release_urls_keep_the_shape_github_answers() {
+        assert!(releases_url().starts_with("https://api.github.com/repos/"));
+        assert!(releases_url().ends_with("/releases?per_page=30"));
+        assert!(releases_page().starts_with("https://github.com/"));
+        assert!(releases_page().ends_with("/releases"));
+    }
 
     /// A trimmed `GET /releases` answer, as GitHub gave it on 2026-10-20: Mac,
     /// Linux, Android and Windows releases mixed, the rolling `*-latest` ones,
