@@ -329,10 +329,15 @@ export class Island {
         void Bridge.saveSettings(State.settings);
         Sound.play("pop");
         this.engine.triggerEmote("proud");
+        // The outfit is animated: without frames the change never reaches the
+        // canvas, and Mochi keeps the old one until something else wakes the
+        // loop — which is why the new hat only appeared after switching pills.
+        this.ensureRunning();
         State.notify();
       },
       previewOutfit: (outfit) => {
         State.wardrobePreview = outfit;
+        this.ensureRunning();
         State.notify();
       },
       keyboard: (on) => {
@@ -946,18 +951,13 @@ export class Island {
     // of the screen.
     const mode = State.settings.placement?.mode ?? "";
     const up = growsUp(mode);
+    const centred = mode === "topCenter";
+    const right = RIGHT_MODES.includes(mode);
     this.islandEl.style.top = up ? "auto" : "0px";
     this.islandEl.style.bottom = up ? "0px" : "auto";
-    if (mode === "topCenter") {
-      this.islandEl.style.left = "50%";
-      this.islandEl.style.right = "auto";
-      this.islandEl.style.transform = "translateX(-50%)";
-    } else {
-      const right = RIGHT_MODES.includes(mode);
-      this.islandEl.style.left = right ? "auto" : "0px";
-      this.islandEl.style.right = right ? "0px" : "auto";
-      this.islandEl.style.transform = "none";
-    }
+    this.islandEl.style.left = centred ? "50%" : right ? "auto" : "0px";
+    this.islandEl.style.right = right ? "0px" : "auto";
+    this.islandEl.style.transform = centred ? "translateX(-50%)" : "none";
     // The corners follow the edge the panel is docked to, and the animated
     // radius still drives them: the corners that meet the edge are square, the
     // free ones use the spring, and the free corner on the anchored side is
@@ -977,7 +977,11 @@ export class Island {
     // one anchored to the top starts at the top. The window is sized to the
     // panel, so this only shows while the panel is still growing.
     const originY = this.placeFromBottom ? Math.max(0, viewportH - hh) : 0;
-    const originX = this.placeFromBottom ? 0 : (viewportW - w) / 2;
+    // Where the panel actually sits inside the window, side included: the panel
+    // is pinned to the right for the right-hand placements, so a rectangle
+    // centred here put the hit area (and the click-through region built from it)
+    // over empty space on the right of the screen and over nothing on the left.
+    const originX = centred ? (viewportW - w) / 2 : right ? Math.max(0, viewportW - w) : 0;
     const rect = { x: originX, y: originY, w, h: hh };
     this.islandBox = rect;
     const p = this.pushedRect;
