@@ -125,6 +125,9 @@ export class SecurePipe {
     });
 
     child.on('error', (error) => {
+      // A host that is being stopped on purpose cannot be started again, and
+      // the send that raced it is not a failure worth reporting.
+      if (this.#stopping) return;
       this.log('error', `pipe: cannot start the pipe host: ${error?.message ?? error}`);
       this.onFatal(error);
       this.#scheduleRestart();
