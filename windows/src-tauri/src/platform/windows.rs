@@ -493,6 +493,45 @@ fn top_windows() -> Vec<(isize, u32, String)> {
     list
 }
 
+/// Every top-level window that carries a title, whether or not it is visible:
+/// (handle, process ID, title, visible).
+///
+/// `top_windows` keeps only the visible ones, which is what "which window does
+/// this session run in" needs. It is the wrong list for "bring this app back":
+/// an app minimized to the notification area *hides* its window instead of
+/// minimizing it, so a visible-only search finds nothing at all — the app sits
+/// in the tray and the button looks dead. The hidden windows Electron keeps
+/// around have no title, so a title filter is what separates the real window
+/// from the helpers.
+fn titled_windows() -> Vec<(isize, u32, String, bool)> {
+    unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let list = unsafe { &mut *(lparam.0 as *mut Vec<(isize, u32, String, bool)>) };
+        unsafe {
+            if GetWindow(hwnd, GW_OWNER).is_ok() {
+                return true.into();
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid as *mut u32));
+            let mut text = [0u16; 512];
+            let len = GetWindowTextW(hwnd, &mut text);
+            if len > 0 {
+                list.push((
+                    hwnd.0 as isize,
+                    pid,
+                    String::from_utf16_lossy(&text[..len as usize]),
+                    IsWindowVisible(hwnd).as_bool(),
+                ));
+            }
+        }
+        true.into()
+    }
+    let mut list: Vec<(isize, u32, String, bool)> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(collect), LPARAM(&mut list as *mut _ as isize));
+    }
+    list
+}
+
 /// The first of `pids` that owns a window.
 pub fn first_with_window(pids: &[u32]) -> Option<u32> {
     let windows = top_windows();
@@ -510,7 +549,10 @@ fn bring_forward(raw: isize) -> bool {
         if !IsWindow(Some(hwnd)).as_bool() {
             return false;
         }
-        if IsIconic(hwnd).as_bool() {
+        // A minimized window and one hidden by a tray app are different states,
+        // and only SW_RESTORE handles both: the app that hid its window on
+        // purpose is not asking to be "shown", it has to be restored.
+        if IsIconic(hwnd).as_bool() || !IsWindowVisible(hwnd).as_bool() {
             let _ = ShowWindow(hwnd, SW_RESTORE);
         } else {
             let _ = ShowWindow(hwnd, SW_SHOW);
@@ -573,17 +615,32 @@ pub fn focus_session_window(owners: &[u32], folder: &str) -> bool {
     owners.first().is_some_and(|pid| focus_process_window(*pid, folder))
 }
 
+/// The window to bring forward for one app: a visible one when there is one,
+/// the first otherwise. Split out so the choice can be tested without a desktop.
+fn pick_app_window(windows: &[(isize, u32, String, bool)], pids: &[u32]) -> Option<isize> {
+    windows
+        .iter()
+        .find(|(_, owner, _, visible)| *visible && pids.contains(owner))
+        .or_else(|| windows.iter().find(|(_, owner, _, _)| pids.contains(owner)))
+        .map(|(hwnd, _, _, _)| *hwnd)
+}
+
 /// Brings forward the window of a running app, by executable name.
+///
+/// Visible first, then hidden: an app minimized to the notification area hides
+/// its window, and that is exactly the case this is for. SW_RESTORE covers both
+/// a minimized and a hidden window; SW_SHOW on a hidden one can leave the app
+/// believing it is still hidden.
 fn focus_app(exe: &str) -> bool {
     let pids: Vec<u32> = process_table()
         .into_iter()
         .filter(|(_, p)| p.exe.eq_ignore_ascii_case(exe))
         .map(|(pid, _)| pid)
         .collect();
-    top_windows()
-        .into_iter()
-        .find(|(_, owner, _)| pids.contains(owner))
-        .is_some_and(|(hwnd, _, _)| bring_forward(hwnd))
+    if pids.is_empty() {
+        return false;
+    }
+    pick_app_window(&titled_windows(), &pids).is_some_and(bring_forward)
 }
 
 /// DeepSeek Harness's own window, brought to the front.
@@ -832,3 +889,41 @@ pub fn prepare_pill_window(win: &WebviewWindow, _mode: super::DesktopMode) -> bo
 pub fn set_pill_edge(_win: &WebviewWindow, _edge: &str) {}
 
 pub fn set_pill_input(_win: &WebviewWindow, _rects: Vec<(f64, f64, f64, f64)>) {}
+
+#[cfg(test)]
+mod tests {
+    use super::pick_app_window;
+
+    /// (handle, owner pid, title, visible)
+    fn win(hwnd: isize, pid: u32, visible: bool) -> (isize, u32, String, bool) {
+        (hwnd, pid, "DeepSeek Harness".to_string(), visible)
+    }
+
+    #[test]
+    fn a_visible_window_wins_over_a_hidden_one() {
+        let windows = [win(1, 10, false), win(2, 10, true), win(3, 99, true)];
+        assert_eq!(pick_app_window(&windows, &[10]), Some(2));
+    }
+
+    #[test]
+    fn an_app_in_the_tray_is_found_by_its_hidden_window() {
+        // The bug this replaces: a visible-only search returned nothing, so the
+        // button did nothing while DSH sat in the notification area.
+        let windows = [win(1, 10, false)];
+        assert_eq!(pick_app_window(&windows, &[10]), Some(1));
+    }
+
+    #[test]
+    fn another_process_window_is_never_taken() {
+        let windows = [win(1, 99, true)];
+        assert_eq!(pick_app_window(&windows, &[10]), None);
+        assert_eq!(pick_app_window(&[], &[10]), None);
+    }
+
+    #[test]
+    fn several_pids_of_one_app_are_all_its_own() {
+        // Electron runs a main process and helpers; any of them may own it.
+        let windows = [win(1, 11, false), win(2, 12, true)];
+        assert_eq!(pick_app_window(&windows, &[10, 11, 12]), Some(2));
+    }
+}
