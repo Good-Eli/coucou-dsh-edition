@@ -52,6 +52,12 @@ export interface PillDefinition {
   source: AgentSource;
   support: PillSupport;
   connect: PillConnect;
+  /**
+   * May be the main tool in Settings even though it is not under "Where you
+   * code". The main tool is the one pill that is always on and takes no slot;
+   * an agent that is the whole point of this build has to be able to be it.
+   */
+  main?: boolean;
 }
 
 export type HostOs = "windows" | "linux";
@@ -105,7 +111,7 @@ export const PILL_CATALOG: readonly PillDefinition[] = [
   // (src-tauri/src/dsh), not through the hook relay, so there is nothing to
   // install — being connected means the bridge answered.
   { id: "dsh", name: "DeepSeek Harness", color: "#4C8DFF", category: "agent",
-    subtitle: N_("Agent"), source: "agent", support: "windows", connect: { kind: "none" } },
+    subtitle: N_("Agent"), source: "agent", support: "windows", connect: { kind: "none" }, main: true },
   // ── AI for the chat ────────────────────────────────────────────────────────
   { id: "ai_anthropic", name: "Anthropic", color: ACCENT.anthropic, category: "ai",
     subtitle: N_("Chat"), source: "n8n", support: "yes", connect: key("anthropic-api-key") },
@@ -186,9 +192,14 @@ export function isHookPill(id: string): boolean {
   return pillDefinition(id)?.connect.kind === "hooks";
 }
 
-/** Workspace tools that can be the main pill. */
+/**
+ * Pills that can be the main one: the workspace tools, plus any agent that
+ * marks itself `main` (DeepSeek Harness in this build).
+ */
 export function mainPillChoices(os: HostOs = HOST_OS): PillDefinition[] {
-  return availablePills(os).filter((p) => p.category === "workspace" && p.support !== "soon");
+  return availablePills(os).filter(
+    (p) => p.support !== "soon" && (p.category === "workspace" || p.main === true),
+  );
 }
 
 /** PillDefinition.sessionSubtitle — next to the name in a live session's card. */

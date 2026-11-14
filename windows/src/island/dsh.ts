@@ -24,8 +24,9 @@ import {
   type DshSnapshot,
 } from "../core/dsh";
 import { pillDefinition } from "../core/pills";
+import { Sound } from "../core/sound";
 import { State } from "../core/state";
-import { dropPendingCard } from "./hooks";
+import { dropPendingCard, surfaceAlert } from "./hooks";
 import type { Island } from "./island";
 // ── Model and effort switching ───────────────────────────────────────────────
 
@@ -199,10 +200,52 @@ export function registerDshHandlers(island: Island) {
 
 /** A report from Rust: the whole truth about DSH right now. */
 export function applyDsh(snapshot: DshSnapshot) {
+  const previous = Dsh.snapshot;
   Dsh.snapshot = snapshot;
   syncTask();
   syncApprovals();
+  noteSessionStates(previous, snapshot);
   State.notify();
+}
+
+/**
+ * Alerts the island when a DSH session ends a turn or fails.
+ *
+ * Hook pills get this from `handleHook`: a finish plays the sound, opens the
+ * island on that pill (or leaves a badge when another pill holds the front),
+ * and the badge clears when the next turn starts. DSH publishes the same facts
+ * over its own bridge, so it gets the same treatment — otherwise a session
+ * that finished while the island was closed was indistinguishable from one
+ * that never ran.
+ *
+ * Only a real transition counts: the first snapshot after connecting, and the
+ * one after a reconnect, list every session afresh and must stay silent.
+ */
+function noteSessionStates(previous: DshSnapshot | null, next: DshSnapshot) {
+  if (!host || !previous || !isLive(previous) || !isLive(next)) return;
+  const island = host;
+
+  let alerted = false;
+  for (const session of next.sessions) {
+    const was = previous.sessions.find((s) => s.id === session.id)?.state ?? null;
+    const now = session.state ?? null;
+    if (!was || was === now) continue;
+
+    if (now === "finished" || now === "error") {
+      Sound.play(now === "error" ? "error" : "finish");
+      // One alert per snapshot: a burst of sessions ending together must not
+      // open and close the island several times over.
+      if (!alerted && surfaceAlert(island, DSH_PILL_ID, now === "error" ? "error" : "finished")) {
+        alerted = true;
+      } else {
+        State.setPillBadge(DSH_PILL_ID, now === "error" ? "error" : "finished");
+      }
+    } else if (now === "thinking" || now === "working") {
+      // A turn started: whatever the last one left behind is stale.
+      State.setPillBadge(DSH_PILL_ID, null);
+      if (State.mode === "hidden") island.reveal();
+    }
+  }
 }
 
 /**
@@ -235,8 +278,8 @@ let lastPillList: string | null = null;
  * one something else put there. Logged here rather than in the state module,
  * because this is where a transport is already in hand.
  */
-export function logPills() {
-  const line = State.tasks.map((t) => `${t.id}(${t.name})`).join(", ");
+export function logPills(tasks: readonly { id: string; name: string }[] = State.tasks) {
+  const line = tasks.map((t) => `${t.id}(${t.name})`).join(", ");
   if (line === lastPillList) return;
   lastPillList = line;
   void Bridge.log(`pills: ${line || "(none)"}`);
@@ -249,7 +292,20 @@ export function syncTask() {
   const index = State.tasks.findIndex((task) => task.id === DSH_PILL_ID);
 
   if (!isLive(snapshot)) {
-    if (index >= 0) State.tasks.splice(index, 1);
+    if (index < 0) return;
+    // The pill exists only while DSH is live — unless it is the main tool, which
+    // is always on and must not disappear when the bridge is down.
+    if (State.isKept(DSH_PILL_ID)) {
+      const kept = State.tasks[index];
+      kept.state = "idle";
+      kept.steps = [];
+      kept.stepIndex = 0;
+      kept.finalLine = null;
+      kept.pillBadge = null;
+      kept.sessionId = null;
+      return;
+    }
+    State.tasks.splice(index, 1);
     return;
   }
 

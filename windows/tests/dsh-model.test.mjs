@@ -22,7 +22,7 @@ import {
 import { State } from "../src/core/state.ts";
 import { setLanguage } from "../src/i18n/i18n.ts";
 
-const island = { alert: () => {}, dropPin: () => {} };
+const island = { alert: () => {}, dropPin: () => {}, reveal: () => {}, setView: () => {} };
 import { registerDshHandlers } from "../src/island/dsh.ts";
 registerDshHandlers(island);
 

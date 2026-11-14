@@ -164,6 +164,20 @@ test("the main pill is a workspace tool that works here", () => {
   assert.equal(DEFAULT_MAIN_PILL, "integration_claude");
 });
 
+test("DeepSeek Harness can be the main tool where it runs", () => {
+  // This build exists to put DSH in the island: it has to be selectable as the
+  // one always-on pill, not only as a declared slot.
+  assert.ok(mainPillChoices("windows").some((p) => p.id === "dsh"));
+  // It has no Windows build behind it on Linux, so it is not offered there.
+  assert.ok(!mainPillChoices("linux").some((p) => p.id === "dsh"));
+  assert.equal(pillDefinition("dsh").main, true);
+  // Selecting it drops it from the declared slots, so it never takes two.
+  const next = chooseMainPill({ mainPill: "agent_codex", activeIntegrations: ["dsh", "agent_gemini"] }, "dsh", "windows");
+  assert.deepEqual(next, { mainPill: "dsh", activeIntegrations: ["agent_gemini"] });
+  assert.deepEqual(sanitizeDeclared({ mainPill: "dsh", activeIntegrations: ["dsh"] }, "windows"),
+    { mainPill: "dsh", activeIntegrations: [] });
+});
+
 test("hook-driven pills are the workspace tools and the agents with hooks", () => {
   for (const id of ["integration_claude", "agent_cursor", "agent_codex", "agent_gemini", "agent_copilot", "agent_muse", "agent_antigravity", "agent_opencode", "agent_amp", "agent_hermes"]) {
     assert.ok(isHookPill(id), id);

@@ -20,6 +20,8 @@ let asked;
 const island = {
   alert: (view) => asked.push(`alert:${view}`),
   dropPin: () => asked.push("dropPin"),
+  reveal: () => asked.push("reveal"),
+  setView: (view) => asked.push(`setView:${view}`),
 };
 registerDshHandlers(island);
 

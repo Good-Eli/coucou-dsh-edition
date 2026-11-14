@@ -139,8 +139,10 @@ pub fn with_plugin(text: &str, entry: &str) -> String {
 /// get wrong at runtime. The build reads them from the repository's
 /// `dsh-plugin/`, so a `windows/`-only checkout cannot build — the two live
 /// together in this repository.
+const BRIDGE_SOURCE: &str = include_str!("../../../../dsh-plugin/bridge.mjs");
+
 const SOURCES: [(&str, &str); 3] = [
-    ("bridge.mjs", include_str!("../../../../dsh-plugin/bridge.mjs")),
+    ("bridge.mjs", BRIDGE_SOURCE),
     ("secure-pipe.mjs", include_str!("../../../../dsh-plugin/secure-pipe.mjs")),
     ("state-acl.mjs", include_str!("../../../../dsh-plugin/state-acl.mjs")),
 ];
@@ -162,12 +164,27 @@ pub struct Status {
 }
 
 /// The YAML of one plugin entry, indented for the `insert` list.
+///
+/// The URL carries a fingerprint of the bridge source. The loader caches a
+/// module by its URL, so rewriting `bridge.mjs` in place changed nothing: DSH
+/// kept running the previous code — with its previous idea of which DSH
+/// versions it supports — until the whole app was restarted. A URL that changes
+/// with the file makes the next plugin reload load what is actually on disk.
 pub fn entry_yaml(module_path: &Path, state_dir: &Path) -> String {
     format!(
-        "    - id: {PLUGIN_ID_PREFIX}\n      name: 'file:///{}'\n      config:\n        protocol: 1\n        stateDir: '{}'\n        logLevel: info\n",
+        "    - id: {PLUGIN_ID_PREFIX}\n      name: 'file:///{}?rev={}'\n      config:\n        protocol: 1\n        stateDir: '{}'\n        logLevel: info\n",
         slashes(module_path),
+        bridge_rev(),
         state_dir.display()
     )
+}
+
+/// A short fingerprint of the embedded bridge, stable for one build.
+fn bridge_rev() -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    BRIDGE_SOURCE.hash(&mut hasher);
+    format!("{:08x}", hasher.finish() as u32)
 }
 
 /// A path as YAML wants it on Windows: forward slashes, no quotes to escape.
@@ -448,5 +465,17 @@ mod tests {
         assert!(entry.contains(&format!("- id: {PLUGIN_ID_PREFIX}")));
         assert!(entry.starts_with("    - id:"), "indented for the insert list");
         assert!(entry.ends_with('\n'));
+    }
+
+    #[test]
+    fn the_module_url_carries_the_source_fingerprint() {
+        // Without it DSH keeps the module it already imported: a rewritten
+        // bridge.mjs was ignored, and with it every fix in the file.
+        let entry = entry_yaml(Path::new("C:\\a\\b\\bridge.mjs"), Path::new("C:\\s"));
+        let rev = bridge_rev();
+        assert_eq!(rev.len(), 8, "a short fingerprint, not a novel");
+        assert!(entry.contains(&format!("bridge.mjs?rev={rev}'")), "the URL must carry it");
+        // Two calls agree, so reinstalling does not churn the entry.
+        assert_eq!(rev, bridge_rev());
     }
 }

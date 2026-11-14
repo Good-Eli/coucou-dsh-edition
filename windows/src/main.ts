@@ -171,6 +171,9 @@ async function main() {
   registerSpotifyHandlers(island);
   registerWhatsAppHandlers(island);
   registerDshHandlers(island);
+  // Every change to the pill list is logged by id, so a pill that should not be
+  // there can be named instead of guessed at.
+  State.onTasksChanged = (tasks) => logPills(tasks);
   // What the island is actually showing, once, so a stray pill can be named.
   logPills();
   // New versions: Rust offers the card, the island opens it when nothing else waits.

@@ -30,8 +30,36 @@ export const name = 'coucou-dsh-bridge';
 /** Bumped whenever the wire format changes; the Coucou side refuses a mismatch. */
 export const PROTOCOL = 1;
 
-/** DSH versions this prototype was written against. */
+/**
+ * This file's own revision, for the log.
+ *
+ * The loader caches a module by its URL, so a rewritten `bridge.mjs` keeps
+ * running the old code until DSH restarts. The installer puts a fingerprint of
+ * this file in the entry's URL for exactly that reason; this number is what
+ * makes the new code visible in `bridge.log` once it does load.
+ */
+export const BUILD = 8;
+
+/** DSH versions this prototype was written against, tag included. */
 export const SUPPORTED_DSH = ['0.2.2-rc.1'];
+
+/**
+ * The API surface this plugin was written against, without the prerelease tag.
+ *
+ * A pin on `0.2.2-rc.1` meant every release candidate of the same API turned the
+ * approval seam off: DSH moved to `0.2.2-rc.3`, the version check failed, and
+ * no request was ever intercepted again. A tag inside a supported base is the
+ * same surface, so it is accepted; a different base is not.
+ */
+export const SUPPORTED_DSH_BASES = ['0.2.2'];
+
+/** True when this DSH speaks an API the plugin knows. */
+export function isSupportedDsh(version) {
+  if (typeof version !== 'string' || version === '') return false;
+  if (SUPPORTED_DSH.includes(version)) return true;
+  const base = version.split('-')[0].split('+')[0];
+  return SUPPORTED_DSH_BASES.includes(base);
+}
 
 
 
@@ -161,18 +189,23 @@ function resolveDshVersion() {
 /**
  * Checks that this DSH can actually support the integration.
  *
- * A version this plugin was not written against, or a missing registry method,
- * disables the approval seam only: DSH keeps its own prompts and its own model
- * handling, and nothing here can grant a permission.
+ * Only the two things the approval seam truly needs are fatal: a way to listen
+ * to events, and a version whose API the plugin knows. The model catalog is a
+ * convenience — it is read lazily through `ctx.get('llm')`, and a host that
+ * cannot answer simply shows no models. Gating the seam on it turned a missing
+ * nicety into a missing safety net, so a missing `llm` is reported as a note.
  */
 function inspectCompatibility(ctx, config, log) {
   const problems = [];
+  const notes = [];
   const version = resolveDshVersion();
 
   if (config.skipVersionCheck !== true) {
     if (!version) problems.push('the DSH version could not be read');
-    else if (!SUPPORTED_DSH.includes(version)) {
-      problems.push(`DSH ${version} is not supported (expected ${SUPPORTED_DSH.join(', ')})`);
+    else if (!isSupportedDsh(version)) {
+      problems.push(
+        `DSH ${version} is not supported (expected ${SUPPORTED_DSH_BASES.join(', ')} or ${SUPPORTED_DSH.join(', ')})`,
+      );
     }
   }
 
@@ -180,17 +213,18 @@ function inspectCompatibility(ctx, config, log) {
 
   const llm = ctx.get?.('llm');
   if (!llm) {
-    problems.push('the llm service is missing');
+    notes.push('the llm service is not mounted yet; the model list may stay empty');
   } else {
     for (const method of ['listProviders', 'listModels', 'resolveModelInfo']) {
-      if (typeof llm[method] !== 'function') problems.push(`llm.${method} is missing`);
+      if (typeof llm[method] !== 'function') notes.push(`llm.${method} is missing`);
     }
   }
 
   if (problems.length > 0) log('warn', `compat: ${problems.join('; ')}`);
-  else log('info', `compat: DSH ${version} looks usable`);
+  else log('info', `compat: DSH ${version ?? '(unknown)'} looks usable`);
+  if (notes.length > 0) log('warn', `compat: ${notes.join('; ')}`);
 
-  return { ok: problems.length === 0, version, problems };
+  return { ok: problems.length === 0, version, problems, notes };
 }
 
 /**
@@ -368,7 +402,7 @@ export function apply(ctx, rawConfig) {
     /* the log below reports it */
   }
   const log = makeLog(stateDir, config.logLevel);
-  log('info', `bridge start (protocol=${PROTOCOL} build=6)`);
+  log('info', `bridge start (protocol=${PROTOCOL} build=${BUILD})`);
 
   /** Live sessions we know about: sessionId → record. */
   const sessions = new Map();
@@ -508,6 +542,10 @@ export function apply(ctx, rawConfig) {
   };
 
   const onApproval = (request, next) => {
+    // Logged before the client check: "DSH never asks" and "DSH asks but nothing
+    // is on screen" look identical from the island, and only one of them is a
+    // defect in this file.
+    log('info', `approval: asked by DSH (tool=${clip(request?.toolName ?? 'unknown', 40)}, client=${connected ? 'yes' : 'no'})`);
     // No Coucou, no card: the stock DSH approval UI answers.
     if (!connected) return next();
 
@@ -520,7 +558,9 @@ export function apply(ctx, rawConfig) {
     const asked = {
       t: 'approval.asked',
       requestId,
-      sessionId: request.agent?.session?.id ?? null,
+      // `req.agent` is the Agent itself (`{ id: SessionId }`) in the current
+      // event contract; older hosts nested it under `agent.session`.
+      sessionId: request.agent?.id ?? request.agent?.session?.id ?? null,
       callId: request.callId ?? null,
       tool: request.toolName ?? 'unknown',
       reason: clip(request.reason ?? '', 200),
@@ -571,7 +611,19 @@ export function apply(ctx, rawConfig) {
   const onSessionEvent = (session, event) => {
     const id = session?.id ?? event?.sessionId;
     if (!id) return;
-    const record = sessions.get(id);
+    let record = sessions.get(id);
+
+    // A session that existed before this plugin loaded, or whose `agent/created`
+    // we missed, would otherwise stay invisible: its events arrive, but there is
+    // no record to update them on and the island shows nothing at all. Look the
+    // agent up once and publish it, so a live session is never silently dropped.
+    if (!record) {
+      const agent = findAgent(ctx, id);
+      if (agent) {
+        publishSession(agent);
+        record = sessions.get(id);
+      }
+    }
 
     switch (event?.type) {
       case 'turn/start':
@@ -809,6 +861,7 @@ export function apply(ctx, rawConfig) {
     log('warn', `approvals: disabled (${why.join(', ')}); DSH keeps its own prompts`);
   } else {
     ctx.on('approval/request', onApproval);
+    log('info', 'approvals: enabled; DSH asks through the island first');
   }
 
   ctx.on('session/event', onSessionEvent);

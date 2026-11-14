@@ -131,7 +131,7 @@ export interface Settings {
   absenceInterval: number;
   /** Declared pills next to the main one (at most 4), in the order they were added. */
   activeIntegrations: string[];
-  /** The always-on workspace pill: VS Code, Cursor, Codex or Antigravity. */
+  /** The always-on pill: a workspace tool, or DeepSeek Harness in this build. */
   mainPill: string;
   /** "primary", "cursor", or `at:<x>,<y>` for one display (logical origin). */
   screen: string;
@@ -311,6 +311,16 @@ class AppState {
 
   private listeners = new Set<Listener>();
 
+  /**
+   * Called after every change to the task list.
+   *
+   * The island uses it to write the pill ids to the log: "there is a second
+   * DeepSeek Harness pill" can only be answered by the id, and a pill can be
+   * created from a hook event, a settings load or the bridge — three places
+   * that have nothing else in common.
+   */
+  onTasksChanged: ((tasks: readonly AgentTask[]) => void) | null = null;
+
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
@@ -318,6 +328,7 @@ class AppState {
 
   /** Marks the UI dirty; the island re-renders on the next frame. */
   notify() {
+    this.onTasksChanged?.(this.tasks);
     for (const fn of this.listeners) fn();
   }
 

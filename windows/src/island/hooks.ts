@@ -109,6 +109,23 @@ export function restoreAlertFocus(): void {
   }
 }
 
+/**
+ * Brings one pill's alert on screen, exactly as a hook event does: the island
+ * opens on the pill when it is the focused one or when every pill may alert,
+ * and borrows the front otherwise.
+ *
+ * Exported for DeepSeek Harness: its sessions arrive over its own bridge, so
+ * without this its pill changed colour and nothing ever popped the island —
+ * a turn that ended while the island was closed looked like it never happened.
+ * False means the caller should leave a badge on the pill instead.
+ */
+export function surfaceAlert(island: Island, pillId: string, view: "finished" | "error"): boolean {
+  if (!showsAlert(pillId, State.focusTask?.id === pillId)) return false;
+  if (State.mode === "expanded") island.setView(view);
+  else island.alert(view);
+  return true;
+}
+
 /** Events after which a pending permission request of the same session is moot. */
 const TURN_OVER = new Set(["Stop", "StopFailure", "UserPromptSubmit", "SessionEnd", "Interrupt"]);
 

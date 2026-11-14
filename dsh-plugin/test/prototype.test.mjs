@@ -15,13 +15,13 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { apply, maskSecrets, clip, tokenMatches, pipeName, PROTOCOL } from '../bridge.mjs';
+import { apply, maskSecrets, clip, tokenMatches, pipeName, PROTOCOL, isSupportedDsh } from '../bridge.mjs';
 import { isPrivateSddl } from '../state-acl.mjs';
 
 const SID = 'S-1-5-21-1-2-3-1001';
 
 /** A Cordis-shaped context with the services the plugin reads. */
-function fakeCtx({ withLlm = true } = {}) {
+function fakeCtx({ withLlm = true, agents } = {}) {
   const listeners = new Map();
   const services = new Map();
   const disposers = [];
@@ -40,7 +40,7 @@ function fakeCtx({ withLlm = true } = {}) {
       }),
     });
   }
-  services.set('agents', { list: () => [] });
+  services.set('agents', agents ?? { list: () => [] });
 
   return {
     listeners,
@@ -83,7 +83,7 @@ test.afterEach(() => {
 /** Starts the plugin with an in-memory channel and returns its handles. */
 function startBridge(overrides = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), 'coucou-dsh-'));
-  const ctx = fakeCtx({ withLlm: overrides.withLlm !== false });
+  const ctx = fakeCtx({ withLlm: overrides.withLlm !== false, agents: overrides.agents });
   apply(ctx, {
     stateDir,
     testChannel: true,
@@ -159,6 +159,21 @@ test('ack + allow returns allowed-once exactly once', async () => {
   clientSend(bridge, { t: 'approval.answer', requestId: asked.requestId, decision: 'allow' });
   const [outcome] = await pending;
   assert.equal(outcome, 'allowed-once');
+});
+
+test('the card names the session the current event contract carries', async () => {
+  const bridge = startBridge();
+  handshake(bridge);
+  const pending = bridge.ctx.fire(
+    'approval/request',
+    approvalRequest({ agent: { id: 'session-from-agent' } }),
+    async () => 'unavailable',
+  );
+  const asked = lastFrame(bridge);
+  assert.equal(asked.t, 'approval.asked');
+  assert.equal(asked.sessionId, 'session-from-agent');
+  clientSend(bridge, { t: 'approval.answer', requestId: asked.requestId, decision: 'deny' });
+  await pending;
 });
 
 test('ack + deny returns rejected', async () => {
@@ -260,14 +275,56 @@ test('a wrong protocol version is refused', async () => {
 
 // ── the compatibility gate ───────────────────────────────────────────────────
 
-test('a DSH without the llm service gets no approval answerer', () => {
+test('a missing llm service costs the catalog, never the approval seam', () => {
   const bridge = startBridge({ withLlm: false });
-  assert.equal(bridge.ctx.has('approval/request'), false, 'must not intercept approvals');
+  // The model list is a convenience read lazily; approvals are the reason the
+  // plugin exists. A host that cannot list models must still get a card.
+  assert.equal(bridge.ctx.has('approval/request'), true, 'must still intercept approvals');
+});
+
+test('a newer release candidate of a supported API is accepted', () => {
+  // The bug this replaces: DSH 0.2.2-rc.3 was refused because the pin said
+  // 0.2.2-rc.1, and every approval silently fell back to the DSH prompt.
+  assert.equal(isSupportedDsh('0.2.2-rc.3'), true);
+  assert.equal(isSupportedDsh('0.2.2'), true);
+  assert.equal(isSupportedDsh('0.2.2-rc.1'), true);
+  assert.equal(isSupportedDsh('0.2.2+build.7'), true);
+});
+
+test('a different API base is refused', () => {
+  assert.equal(isSupportedDsh('0.2.3'), false);
+  assert.equal(isSupportedDsh('0.3.0-rc.1'), false);
+  assert.equal(isSupportedDsh('1.0.0'), false);
+  assert.equal(isSupportedDsh(''), false);
+  assert.equal(isSupportedDsh(null), false);
 });
 
 test('a supported host does register the approval answerer', () => {
   const bridge = startBridge();
   assert.equal(bridge.ctx.has('approval/request'), true);
+});
+
+test('an event for a session the plugin never saw still reaches the island', async () => {
+  // The host hot-patches a running process: an agent can appear after this
+  // plugin loaded, and `agent/created` for it is already in the past. Its
+  // events used to be dropped for want of a record, so the island showed a
+  // session that did nothing.
+  const live = [];
+  const agent = { session: { id: 'session-late', header: { cwd: 'C:/work' } } };
+  const bridge = startBridge({ agents: { list: () => live, get: () => live[0] } });
+  handshake(bridge);
+  live.push(agent);
+  await bridge.ctx.fire('session/event', agent.session, { type: 'turn/start' });
+
+  const frames = bridge.channel.outgoing.join('').trim().split('\n').map((line) => JSON.parse(line));
+  assert.ok(
+    frames.some((f) => f.t === 'session.upsert' && f.session?.id === 'session-late'),
+    'the session must be published from its first event',
+  );
+  assert.ok(
+    frames.some((f) => f.t === 'session.state' && f.sessionId === 'session-late' && f.state === 'thinking'),
+    'and its state must follow',
+  );
 });
 
 test('ready reports the security and compatibility state', async () => {
