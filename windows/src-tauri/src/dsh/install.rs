@@ -152,8 +152,13 @@ pub fn with_plugin(text: &str, entry: &str) -> String {
 /// together in this repository.
 const BRIDGE_SOURCE: &str = include_str!("../../../../dsh-plugin/bridge.mjs");
 
-/// The two modules the bridge imports, written beside it under fixed names.
-const SUPPORT_SOURCES: [(&str, &str); 2] = [
+/// The modules the bridge needs beside it, written under fixed names.
+///
+/// `pipe-host.mjs` belongs here too: it was missing for a while, so the fix that
+/// stopped a rejected client from killing the pipe lived in this binary and
+/// never reached the copy DSH was running.
+const SUPPORT_SOURCES: [(&str, &str); 3] = [
+    ("pipe-host.mjs", include_str!("../../../../dsh-plugin/pipe-host.mjs")),
     ("secure-pipe.mjs", include_str!("../../../../dsh-plugin/secure-pipe.mjs")),
     ("state-acl.mjs", include_str!("../../../../dsh-plugin/state-acl.mjs")),
 ];
@@ -226,9 +231,11 @@ fn install_entry(entry: &str, force_reload: bool) -> Result<bool, String> {
     }
     if is_installed(&current) {
         edit_profile(|text| with_plugin(text, &disabled_entry(entry)))?;
-        // DSH reads the patch file on its own watcher; give it the moment it
-        // needs to unload the plugin before its entry comes back.
-        std::thread::sleep(std::time::Duration::from_millis(800));
+        // DSH watches this file with write stabilization: a change is reported
+        // about two seconds after the file stops changing, and two writes that
+        // land inside that window are reported as one. A shorter pause here
+        // merged the unload with the load and nothing was reloaded at all.
+        std::thread::sleep(std::time::Duration::from_millis(3000));
         edit_profile(|text| with_plugin(text, entry))?;
         return Ok(true);
     }

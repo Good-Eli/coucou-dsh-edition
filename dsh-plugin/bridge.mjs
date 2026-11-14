@@ -16,9 +16,10 @@
  */
 
 import { createServer } from 'node:net';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, writeFileSync, appendFileSync, statSync, existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, appendFileSync, statSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 
@@ -902,11 +903,13 @@ export function apply(ctx, rawConfig) {
     ctx.effect(() => () => clearTimeout(timer));
   }
 
-  ctx.on('session/event', onSessionEvent);
-  ctx.on('agent/created', ({ agent }) => publishSession(agent));
-  ctx.on('llm/models-updated', () => {
+  /** Listeners this instance owns, so a newer build can take over cleanly. */
+  const offs = [];
+  offs.push(ctx.on('session/event', onSessionEvent));
+  offs.push(ctx.on('agent/created', ({ agent }) => publishSession(agent)));
+  offs.push(ctx.on('llm/models-updated', () => {
     void catalog().then((state) => send({ t: 'catalog', ...state }));
-  });
+  }));
 
   // Sessions that already exist when the plugin loads (a hot patch applies to a
   // running host) would otherwise stay invisible until their next event.
@@ -920,9 +923,97 @@ export function apply(ctx, rawConfig) {
     for (const requestId of [...pending.keys()]) settle(requestId, 'cancelled');
     channel.stop();
   });
+
+  // Coucou ships a bridge that may be newer than the one DSH is running. DSH
+  // keeps the module it imported first and its profile recompose does not swap
+  // it, so an updated bridge used to wait for a DSH restart — and until then the
+  // island was running yesterday's code. This instance therefore watches its own
+  // folder and, when a newer build appears, imports it and hands over: the new
+  // module's apply() is called on the same context after this one has stopped.
+  watchForNewerBuild({
+    ctx,
+    config,
+    log,
+    stop: () => {
+      for (const requestId of [...pending.keys()]) settle(requestId, 'cancelled');
+      for (const off of offs.splice(0)) {
+        try {
+          off();
+        } catch {
+          /* already gone */
+        }
+      }
+      const hook = approvalHooks(ctx);
+      const ours = hook?.findIndex((h) => h.callback === onApproval) ?? -1;
+      if (ours >= 0) hook.splice(ours, 1);
+      channel.stop();
+    },
+  });
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+/** How often this instance looks for a newer bridge beside itself. */
+const RELOAD_CHECK_MS = 5000;
+
+/**
+ * Watches this module's folder and hands over to a newer build.
+ *
+ * The bridge is installed as `bridge-<fingerprint>.mjs` and every build writes a
+ * new name, so "a file I am not" is the whole test. The new module is imported
+ * (and validated) before this instance stops, so a broken file cannot leave the
+ * host with no bridge at all.
+ */
+function watchForNewerBuild({ ctx, config, log, stop }) {
+  let mine;
+  try {
+    mine = basename(fileURLToPath(import.meta.url));
+  } catch {
+    return;
+  }
+  if (!/^bridge-[0-9a-f]+\.mjs$/.test(mine)) return; // a source checkout, not an install
+
+  let busy = false;
+  const timer = setInterval(async () => {
+    if (busy) return;
+    const newer = newestBridge(dirname(fileURLToPath(import.meta.url)), mine);
+    if (!newer) return;
+    busy = true;
+    try {
+      // The query keeps Node's module cache out of the way; the file name alone
+      // already differs, which is what makes this a genuinely new module.
+      const next = await import(`${pathToFileURL(newer).href}?v=${Date.now()}`);
+      if (typeof next.apply !== 'function') throw new Error('the newer bridge exports no apply()');
+      log('info', `reload: ${basename(newer)} is newer than ${mine}; handing over`);
+      clearInterval(timer);
+      stop();
+      next.apply(ctx, config);
+      log('info', `reload: now running ${basename(newer)}`);
+    } catch (error) {
+      log('error', `reload: cannot switch to ${basename(newer)}: ${clip(error?.message ?? error)}`);
+    } finally {
+      busy = false;
+    }
+  }, RELOAD_CHECK_MS);
+  if (typeof timer.unref === 'function') timer.unref();
+  ctx.effect(() => () => clearInterval(timer));
+}
+
+/** The newest `bridge-*.mjs` in the folder other than this one, or null. */
+function newestBridge(dir, mine) {
+  try {
+    let best = null;
+    for (const name of readdirSync(dir)) {
+      if (!/^bridge-[0-9a-f]+\.mjs$/.test(name) || name === mine) continue;
+      const full = join(dir, name);
+      const mtime = statSync(full).mtimeMs;
+      if (!best || mtime > best.mtime) best = { full, mtime };
+    }
+    return best?.full ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * The live `approval/request` listener list, or null when it cannot be read.
