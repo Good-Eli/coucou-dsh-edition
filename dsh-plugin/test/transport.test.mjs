@@ -34,6 +34,15 @@ test('a kick drops the client and leaves the pipe serving', () => {
   );
 });
 
+test('an I/O failure is a disconnect, never the end of the bridge', () => {
+  // Disconnecting from the other thread makes the next peek fail; that used to
+  // be reported as an error and exit the host with code 5.
+  assert.doesNotMatch(host, /process\.exit\(5\)/, 'the I/O path must not exit the host');
+  assert.match(host, /const CLIENT_GONE = new Set\(/, 'the expected codes are named');
+  assert.match(host, /COUNT|connect failed/, 'a connect that fails is retried');
+  assert.match(host, /treating as a disconnect/, 'an unexpected code is still only a disconnect');
+});
+
 test('a host that dies is brought back, with a backoff', () => {
   assert.match(supervisor, /#scheduleRestart\(\)/, 'there is a restart path at all');
   assert.match(supervisor, /restarting the host in/, 'the restart is logged');

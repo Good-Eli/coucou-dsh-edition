@@ -16,10 +16,21 @@ import { Worker } from 'node:worker_threads';
 import { createRequire } from 'node:module';
 
 const WAIT_MS = 8;
-const ERROR_PIPE_CONNECTED = 535;
+const ERROR_INVALID_HANDLE = 6;
+const ERROR_OPERATION_ABORTED = 995;
 const ERROR_BROKEN_PIPE = 109;
 const ERROR_NO_DATA = 232;
 const ERROR_PIPE_NOT_CONNECTED = 233;
+const ERROR_PIPE_CONNECTED = 535;
+
+/** Codes that mean "the client is gone", not "this bridge is broken". */
+const CLIENT_GONE = new Set([
+  ERROR_INVALID_HANDLE,
+  ERROR_OPERATION_ABORTED,
+  ERROR_BROKEN_PIPE,
+  ERROR_NO_DATA,
+  ERROR_PIPE_NOT_CONNECTED,
+]);
 
 /**
  * Pipe I/O, kept off the main thread so this process still reads its stdin.
@@ -56,8 +67,13 @@ while (running) {
   const ok = ConnectNamedPipe(handle, null);
   const err = ok ? 0 : GetLastError();
   if (!ok && err !== ${ERROR_PIPE_CONNECTED}) {
-    if (running) parentPort.postMessage({ t: 'error', error: err });
-    break;
+    if (!running) break;
+    // A handle left over from a kick can take a moment to be reusable. Wait,
+    // tell the parent, and try again: giving up here used to kill the pipe
+    // host, and with it every approval, until DSH restarted the plugin.
+    parentPort.postMessage({ t: 'debug', message: 'connect failed: ' + err });
+    sleep(50);
+    continue;
   }
   parentPort.postMessage({ t: 'connected' });
 
@@ -65,13 +81,11 @@ while (running) {
     const available = [0];
     if (!PeekNamedPipe(handle, null, 0, null, available, null)) {
       const code = GetLastError();
-      if (code === ${ERROR_BROKEN_PIPE} || code === ${ERROR_NO_DATA} || code === ${ERROR_PIPE_NOT_CONNECTED}) {
-        DisconnectNamedPipe(handle);
-        if (running) parentPort.postMessage({ t: 'disconnected' });
-        break;
+      DisconnectNamedPipe(handle);
+      if (running && !${JSON.stringify([...CLIENT_GONE])}.includes(code)) {
+        parentPort.postMessage({ t: 'debug', message: 'peek failed: ' + code + ' (treating as a disconnect)' });
       }
-      parentPort.postMessage({ t: 'error', error: code });
-      running = false;
+      if (running) parentPort.postMessage({ t: 'disconnected' });
       break;
     }
     if (available[0] === 0) {
@@ -82,13 +96,11 @@ while (running) {
     const read = [0];
     if (!ReadFile(handle, buf, want, read, null)) {
       const code = GetLastError();
-      if (code === ${ERROR_BROKEN_PIPE} || code === ${ERROR_NO_DATA}) {
-        DisconnectNamedPipe(handle);
-        if (running) parentPort.postMessage({ t: 'disconnected' });
-        break;
+      DisconnectNamedPipe(handle);
+      if (running && !${JSON.stringify([...CLIENT_GONE])}.includes(code)) {
+        parentPort.postMessage({ t: 'debug', message: 'read failed: ' + code + ' (treating as a disconnect)' });
       }
-      parentPort.postMessage({ t: 'error', error: code });
-      running = false;
+      if (running) parentPort.postMessage({ t: 'disconnected' });
       break;
     }
     if (read[0] > 0) {
@@ -165,7 +177,9 @@ const worker = new Worker(IO_WORKER, { eval: true, workerData: { handle, koffiPa
 worker.on('message', (message) => {
   if (message.t === 'data') process.stdout.write(message.text);
   else process.send?.(message);
-  if (message.t === 'error') process.exit(5);
+  // The worker no longer reports I/O failures as fatal: a client that vanishes
+  // mid-read is a disconnect, and the loop reconnects. Only a genuine worker
+  // crash reaches `error` below, which is the one case still worth exiting for.
 });
 worker.on('error', (error) => {
   process.send?.({ t: 'fatal', message: `io worker failed: ${error?.message ?? error}` });
