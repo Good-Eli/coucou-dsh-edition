@@ -33,6 +33,9 @@ export class SecurePipe {
   #child = null;
   #ready = false;
   #stopping = false;
+  /** Unexpected deaths since the last successful start, for the backoff. */
+  #deaths = 0;
+  #retry = null;
 
   constructor({ pipeName, sid, koffiPath, log = () => {}, onFatal = () => {} }) {
     this.pipeName = pipeName;
@@ -49,6 +52,7 @@ export class SecurePipe {
 
   /** Spawns the host. Throws only when the process cannot be started. */
   start() {
+    this.#stopping = false;
     const child = spawn(
       process.execPath,
       [HOST_SCRIPT, this.pipeName, this.sid, this.koffiPath],
@@ -74,6 +78,7 @@ export class SecurePipe {
       switch (message?.t) {
         case 'ready':
           this.#ready = true;
+          this.#deaths = 0;
           this.actualSddl = message.sddl ?? null;
           this.log('info', `pipe: host ready (DACL ${this.actualSddl ?? 'unknown'})`);
           break;
@@ -111,14 +116,40 @@ export class SecurePipe {
       // exists to contain. DSH itself is untouched.
       this.log('error', `pipe: host exited (${how})`);
       this.onFatal(new Error(`pipe host exited (${how})`));
+      // A dead host used to be the end of the bridge: DSH kept the plugin
+      // loaded, no pipe existed, and every approval silently went to DSH's own
+      // window until the plugin was restarted by hand. Bringing the host back
+      // is the difference between "approvals paused for two seconds" and
+      // "approvals stopped working".
+      this.#scheduleRestart();
     });
 
     child.on('error', (error) => {
       this.log('error', `pipe: cannot start the pipe host: ${error?.message ?? error}`);
       this.onFatal(error);
+      this.#scheduleRestart();
     });
 
     return this;
+  }
+
+  /** Brings the host back after an unexpected exit, backing off as it repeats. */
+  #scheduleRestart() {
+    if (this.#stopping || this.#retry) return;
+    this.#deaths = Math.min(this.#deaths + 1, 5);
+    const delay = Math.min(1000 * 2 ** (this.#deaths - 1), 30_000);
+    this.log('info', `pipe: restarting the host in ${delay} ms`);
+    this.#retry = setTimeout(() => {
+      this.#retry = null;
+      if (this.#stopping) return;
+      try {
+        this.start();
+      } catch (error) {
+        this.log('error', `pipe: cannot restart the host: ${error?.message ?? error}`);
+        this.#scheduleRestart();
+      }
+    }, delay);
+    this.#retry.unref?.();
   }
 
   get ready() {
@@ -144,6 +175,10 @@ export class SecurePipe {
     this.#child = null;
     this.#ready = false;
     this.#stopping = true;
+    if (this.#retry) {
+      clearTimeout(this.#retry);
+      this.#retry = null;
+    }
     if (!child) return;
     try {
       child.send?.({ t: 'stop' });

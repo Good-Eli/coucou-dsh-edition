@@ -152,8 +152,8 @@ pub fn with_plugin(text: &str, entry: &str) -> String {
 /// together in this repository.
 const BRIDGE_SOURCE: &str = include_str!("../../../../dsh-plugin/bridge.mjs");
 
-const SOURCES: [(&str, &str); 3] = [
-    ("bridge.mjs", BRIDGE_SOURCE),
+/// The two modules the bridge imports, written beside it under fixed names.
+const SUPPORT_SOURCES: [(&str, &str); 2] = [
     ("secure-pipe.mjs", include_str!("../../../../dsh-plugin/secure-pipe.mjs")),
     ("state-acl.mjs", include_str!("../../../../dsh-plugin/state-acl.mjs")),
 ];
@@ -176,16 +176,16 @@ pub struct Status {
 
 /// The YAML of one plugin entry, indented for the `insert` list.
 ///
-/// The URL carries a fingerprint of the bridge source. The loader caches a
-/// module by its URL, so rewriting `bridge.mjs` in place changed nothing: DSH
-/// kept running the previous code — with its previous idea of which DSH
-/// versions it supports — until the whole app was restarted. A URL that changes
-/// with the file makes the next plugin reload load what is actually on disk.
+/// The module's own file name carries a fingerprint of the bridge source. The
+/// loader keys an imported module by its address, and a query string on a
+/// `file://` URL did not split that key: DSH kept the module it had already
+/// imported and logged the previous build's number after the entry changed. A
+/// different file name is a different address whatever the loader does with the
+/// path, so the next plugin reload loads what is actually on disk.
 pub fn entry_yaml(module_path: &Path, state_dir: &Path) -> String {
     format!(
-        "    - id: {PLUGIN_ID_PREFIX}\n      name: 'file:///{}?rev={}'\n      config:\n        protocol: 1\n        stateDir: '{}'\n        logLevel: info\n",
+        "    - id: {PLUGIN_ID_PREFIX}\n      name: 'file:///{}'\n      config:\n        protocol: 1\n        stateDir: '{}'\n        logLevel: info\n",
         slashes(module_path),
-        bridge_rev(),
         state_dir.display()
     )
 }
@@ -204,12 +204,18 @@ fn slashes(path: &Path) -> String {
 }
 
 /// Where the plugin is copied to, and the state folder it publishes into.
+///
+/// Both live under `%LOCALAPPDATA%\Coucou`, beside the log and the hook — the
+/// same place `wire::state_dir()` reads `runtime.json` from. Using the
+/// preferences folder (`%APPDATA%\Coucou`) here would put the plugin's token in
+/// one directory and Coucou's reader in another: the bridge would connect to
+/// nothing, and the profile entry would name a file nobody else can find.
 pub fn plugin_dir() -> PathBuf {
-    crate::platform::config_dir().join("dsh").join("plugin")
+    crate::platform::local_dir().join("dsh").join("plugin")
 }
 
 pub fn state_dir() -> PathBuf {
-    crate::platform::config_dir().join("dsh").join("state")
+    crate::platform::local_dir().join("dsh").join("state")
 }
 
 /// The patch file of the running DSH profile.
@@ -222,8 +228,11 @@ pub fn patch_file() -> Option<PathBuf> {
 // ── Doing it ────────────────────────────────────────────────────────────────
 
 /// Where the modules are written and the id the entry gets.
+///
+/// The bridge file is named after the source it holds: see [`entry_yaml`] for
+/// why the name, and not a query string, is what makes DSH import the new code.
 fn module_path() -> PathBuf {
-    plugin_dir().join("bridge.mjs")
+    plugin_dir().join(format!("bridge-{}.mjs", bridge_rev()))
 }
 
 /// A dated copy of the patch file, next to it, so an edit can always be undone.
@@ -277,12 +286,7 @@ pub fn status(connected: bool) -> Status {
 
 /// Writes the modules and adds the entry. DSH picks it up at its next start.
 pub fn apply() -> Result<Status, String> {
-    let dir = plugin_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    for (name, source) in SOURCES {
-        let dest = dir.join(name);
-        std::fs::write(&dest, source).map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
-    }
+    write_sources(&mut false)?;
     let entry = entry_yaml(&module_path(), &state_dir());
     let changed = edit_profile(|text| with_plugin(text, &entry))?;
     crate::log::line(format!(
@@ -291,6 +295,51 @@ pub fn apply() -> Result<Status, String> {
         module_path().display()
     ));
     Ok(status(false))
+}
+
+/// Writes this build's modules, and says whether anything on disk changed.
+///
+/// The bridge goes to its fingerprinted name; the two modules it imports keep
+/// their plain names. Older bridge files are pruned: each build adds one, and a
+/// folder full of them helps nobody.
+fn write_sources(changed: &mut bool) -> Result<(), String> {
+    let dir = plugin_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+
+    let current = module_path();
+    if std::fs::read_to_string(&current).ok().as_deref() != Some(BRIDGE_SOURCE) {
+        std::fs::write(&current, BRIDGE_SOURCE)
+            .map_err(|e| format!("cannot write {}: {e}", current.display()))?;
+        *changed = true;
+    }
+    for (name, source) in SUPPORT_SOURCES {
+        let dest = dir.join(name);
+        if std::fs::read_to_string(&dest).ok().as_deref() == Some(source) {
+            continue;
+        }
+        std::fs::write(&dest, source).map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
+        *changed = true;
+    }
+    prune_old_bridges(&dir, &current);
+    Ok(())
+}
+
+/// Removes `bridge-<fingerprint>.mjs` files that are not this build's.
+fn prune_old_bridges(dir: &Path, current: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        if !name.starts_with("bridge-") || !name.ends_with(".mjs") || path == current {
+            continue;
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+    // The pre-fingerprint name, from builds that wrote a fixed one.
+    let legacy = dir.join("bridge.mjs");
+    if legacy != *current {
+        let _ = std::fs::remove_file(legacy);
+    }
 }
 
 /// Takes the entry out again. The modules stay on disk: they are small, and
@@ -307,11 +356,12 @@ pub fn remove() -> Result<Status, String> {
 /// Brings an installed bridge up to this build's sources and entry.
 ///
 /// Called when Coucou starts. The copy on disk can be older than the one inside
-/// this binary, and the profile entry carries a fingerprint of the source: left
-/// alone, a running DSH keeps the module it already imported and every fix in
-/// the new bridge waits for a restart. Rewriting the entry only when it is stale
-/// makes DSH hot-reload the plugin instead. A profile where the bridge was not
-/// installed is left untouched — this never installs it behind the user's back.
+/// this binary, and the profile entry names the bridge file by its fingerprint:
+/// left alone, a running DSH keeps the module it already imported and every fix
+/// in the new bridge waits for a restart. Rewriting both only when they are
+/// stale makes DSH hot-reload the plugin instead. A profile where the bridge was
+/// not installed is left untouched — this never installs it behind the user's
+/// back.
 pub fn refresh() -> Result<bool, String> {
     let file = match patch_file() {
         Some(file) => file,
@@ -322,18 +372,8 @@ pub fn refresh() -> Result<bool, String> {
         return Ok(false);
     }
 
-    let dir = plugin_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     let mut changed = false;
-    for (name, source) in SOURCES {
-        let dest = dir.join(name);
-        if std::fs::read_to_string(&dest).ok().as_deref() == Some(source) {
-            continue;
-        }
-        std::fs::write(&dest, source).map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
-        changed = true;
-    }
-
+    write_sources(&mut changed)?;
     let entry = entry_yaml(&module_path(), &state_dir());
     changed |= edit_profile(|text| with_plugin(text, &entry))?;
     if changed {
@@ -517,15 +557,55 @@ mod tests {
     }
 
     #[test]
-    fn the_module_url_carries_the_source_fingerprint() {
-        // Without it DSH keeps the module it already imported: a rewritten
-        // bridge.mjs was ignored, and with it every fix in the file.
-        let entry = entry_yaml(Path::new("C:\\a\\b\\bridge.mjs"), Path::new("C:\\s"));
-        let rev = bridge_rev();
-        assert_eq!(rev.len(), 8, "a short fingerprint, not a novel");
-        assert!(entry.contains(&format!("bridge.mjs?rev={rev}'")), "the URL must carry it");
+    fn the_plugin_lives_where_the_client_reads_its_token() {
+        // A real defect: the installer used the preferences folder while
+        // `wire::state_dir()` reads the local one, so the entry it wrote named a
+        // bridge whose `runtime.json` Coucou never looked at — the pipe was
+        // nowhere to be found and the island stayed disconnected.
+        let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        let Some(local) = local else { return };
+        let home = local.join("Coucou");
+        assert_eq!(state_dir(), home.join("dsh").join("state"));
+        assert_eq!(wire_state_dir(), state_dir());
+        assert!(plugin_dir().starts_with(&home), "the modules sit beside the state");
+    }
+
+    /// The reader's own answer, so the two cannot drift apart again.
+    fn wire_state_dir() -> PathBuf {
+        super::super::wire::state_dir()
+    }
+
+    #[test]
+    fn the_module_is_named_after_the_source_it_holds() {
+        // A query string on the module URL did not split the loader's cache key:
+        // DSH kept the old module and logged the old build number after the
+        // entry changed. The file name itself has to differ.
+        let path = module_path();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        assert_eq!(name, format!("bridge-{}.mjs", bridge_rev()));
+        assert!(entry_yaml(&path, Path::new("C:\\s")).contains(&name));
         // Two calls agree, so reinstalling does not churn the entry.
-        assert_eq!(rev, bridge_rev());
+        assert_eq!(bridge_rev(), bridge_rev());
+    }
+
+    #[test]
+    fn older_bridge_files_are_pruned_and_support_modules_kept() {
+        let dir = std::env::temp_dir().join(format!("coucou-plugin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("bridge-old.mjs"), "old").unwrap();
+        std::fs::write(dir.join("bridge.mjs"), "legacy").unwrap();
+        std::fs::write(dir.join("secure-pipe.mjs"), "keep").unwrap();
+        let current = dir.join("bridge-mine.mjs");
+        std::fs::write(&current, "mine").unwrap();
+
+        prune_old_bridges(&dir, &current);
+
+        assert!(current.exists(), "this build's file stays");
+        assert!(dir.join("secure-pipe.mjs").exists(), "the imported module is not ours to prune");
+        assert!(!dir.join("bridge-old.mjs").exists());
+        assert!(!dir.join("bridge.mjs").exists(), "the pre-fingerprint name goes too");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -533,17 +613,16 @@ mod tests {
         // The defect: an entry with an older fingerprint was left alone, so DSH
         // kept the module it had already imported and a fixed bridge could not
         // reach a running host without a restart.
-        let old = entry_yaml(Path::new("C:/x/bridge.mjs"), Path::new("C:/state"))
-            .replace("?rev=", "?rev=00000000-old-");
-        let base = format!("- id: web\n  name: '@deepseek-ai/dsh-web'\n");
+        let old = entry_yaml(Path::new("C:/x/bridge-older.mjs"), Path::new("C:/state"));
+        let base = "- id: web\n  name: '@deepseek-ai/dsh-web'\n".to_string();
         let installed = with_plugin(&base, &old);
-        let fresh = entry_yaml(Path::new("C:/x/bridge.mjs"), Path::new("C:/state"));
+        let fresh = entry_yaml(Path::new("C:/x/bridge-newer.mjs"), Path::new("C:/state"));
 
         let refreshed = with_plugin(&installed, &fresh);
         assert_ne!(refreshed, installed);
         assert_eq!(refreshed.matches(PLUGIN_ID_PREFIX).count(), 1, "no duplicate entry");
         assert!(refreshed.contains(&fresh), "the entry is this build's");
-        assert!(!refreshed.contains("00000000-old-"));
+        assert!(!refreshed.contains("bridge-older.mjs"));
         // Everything that is not ours survives.
         assert!(refreshed.contains("- id: web"));
         // And a second refresh of the same build changes nothing.

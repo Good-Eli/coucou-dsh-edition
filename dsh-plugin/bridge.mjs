@@ -741,6 +741,11 @@ export function apply(ctx, rawConfig) {
       if (!authed) {
         if (message.t !== 'hello' || message.protocol !== PROTOCOL || !tokenMatches(runtime.token, message.token)) {
           log('warn', 'pipe: rejected a client (protocol or token mismatch)');
+          // A Coucou that read `runtime.json` before this host wrote a new token
+          // is a normal race after a bridge update, not an attack. Drop this
+          // client and its half-frame, keep the pipe serving: the next connect
+          // with the current token must still work.
+          lineBuffer = '';
           channel.kick('auth failed');
           return;
         }

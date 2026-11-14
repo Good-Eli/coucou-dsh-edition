@@ -174,9 +174,15 @@ worker.on('error', (error) => {
 
 // A blocked ReadFile only ends when the instance is disconnected, so the kick
 // must come from this thread, which owns a second binding to the same handle.
+//
+// A kick drops the current client and nothing else. It used to also stop the IO
+// worker, which closed the handle while the worker was still polling it: the
+// worker reported an error, this process exited with code 5, and the bridge was
+// gone until DSH restarted the plugin. One stale token — a Coucou that read
+// `runtime.json` before this host wrote a new one — was then enough to silence
+// every approval.
 const kick = () => {
   DisconnectNamedPipe(handle);
-  worker.postMessage({ t: 'stop' });
 };
 
 process.stdin.setEncoding('utf8');
@@ -195,7 +201,9 @@ process.on('message', (message) => {
   if (message?.t === 'kick') kick();
   if (message?.t === 'stop') {
     kick();
-    setTimeout(() => process.exit(0), 200);
+    // The worker closes the handle itself once it has stopped polling it.
+    worker.once('exit', () => process.exit(0));
+    setTimeout(() => process.exit(0), 500);
   }
 });
 
