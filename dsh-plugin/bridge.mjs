@@ -38,7 +38,7 @@ export const PROTOCOL = 1;
  * this file in the entry's URL for exactly that reason; this number is what
  * makes the new code visible in `bridge.log` once it does load.
  */
-export const BUILD = 9;
+export const BUILD = 10;
 
 /**
  * Why this plugin does not decide its worth from the DSH version string.
