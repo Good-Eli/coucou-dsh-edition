@@ -198,6 +198,43 @@ fn bridge_rev() -> String {
     format!("{:08x}", hasher.finish() as u32)
 }
 
+/// The same entry, marked disabled.
+///
+/// Writing this and then the live entry a moment later unloads the running
+/// plugin and loads it again — which is what makes DSH drop the module it has
+/// already imported under this entry. It is the same two steps the plugin
+/// manager performs, done through the profile the bridge already owns.
+fn disabled_entry(entry: &str) -> String {
+    entry.replacen("      config:\n", "      enabled: false\n      config:\n", 1)
+}
+
+/// Puts this build's entry in the profile, reloading a running bridge if needed.
+///
+/// Returns whether the profile changed. Pointing at the new module is not
+/// enough on its own: DSH keeps the namespace it imported first, so a running
+/// plugin has to be unloaded before the new file is read. Nor can the entry
+/// alone say whether the running bridge is healthy — a pipe host that died
+/// leaves the entry looking perfect and no pipe at all. So the caller says
+/// whether to reload regardless, and this is the one place that unloads first.
+fn install_entry(entry: &str, force_reload: bool) -> Result<bool, String> {
+    let current = patch_file()
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .unwrap_or_default();
+    let matches = with_plugin(&current, entry) == current;
+    if matches && !force_reload {
+        return Ok(false);
+    }
+    if is_installed(&current) {
+        edit_profile(|text| with_plugin(text, &disabled_entry(entry)))?;
+        // DSH reads the patch file on its own watcher; give it the moment it
+        // needs to unload the plugin before its entry comes back.
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        edit_profile(|text| with_plugin(text, entry))?;
+        return Ok(true);
+    }
+    edit_profile(|text| with_plugin(text, entry))
+}
+
 /// A path as YAML wants it on Windows: forward slashes, no quotes to escape.
 fn slashes(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
@@ -236,16 +273,49 @@ fn module_path() -> PathBuf {
 }
 
 /// A dated copy of the patch file, next to it, so an edit can always be undone.
+///
+/// The bridge is reloaded at every start, and a reload writes the profile
+/// twice; without a bound the folder would fill with near-identical copies.
 fn backup(file: &Path, text: &str) -> Result<PathBuf, String> {
+    const KEEP: usize = 10;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let dir = file.parent().ok_or("the profile has no folder")?.join("backups");
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    let dest = dir.join(format!("cordis.patch.yml.{stamp}.bak"));
+    // Two writes in the same second would collide: keep them apart.
+    let mut dest = dir.join(format!("cordis.patch.yml.{stamp}.bak"));
+    let mut n = 1;
+    while dest.exists() {
+        dest = dir.join(format!("cordis.patch.yml.{stamp}-{n}.bak"));
+        n += 1;
+    }
     std::fs::write(&dest, text).map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
+    prune_backups(&dir, KEEP);
     Ok(dest)
+}
+
+/// Keeps the newest `keep` copies, deleting the rest.
+fn prune_backups(dir: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut copies: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("cordis.patch.yml.") && n.ends_with(".bak"))
+        })
+        .collect();
+    if copies.len() <= keep {
+        return;
+    }
+    copies.sort();
+    let drop = copies.len() - keep;
+    for path in copies.into_iter().take(drop) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Reads the profile, hands it to `edit`, and writes the result back — but only
@@ -288,7 +358,7 @@ pub fn status(connected: bool) -> Status {
 pub fn apply() -> Result<Status, String> {
     write_sources(&mut false)?;
     let entry = entry_yaml(&module_path(), &state_dir());
-    let changed = edit_profile(|text| with_plugin(text, &entry))?;
+    let changed = install_entry(&entry, true)?;
     crate::log::line(format!(
         "dsh plugin: {} into {}",
         if changed { "installed" } else { "already installed" },
@@ -353,15 +423,15 @@ pub fn remove() -> Result<Status, String> {
     Ok(status(false))
 }
 
-/// Brings an installed bridge up to this build's sources and entry.
+/// Brings an installed bridge up to this build and makes sure it is running.
 ///
 /// Called when Coucou starts. The copy on disk can be older than the one inside
-/// this binary, and the profile entry names the bridge file by its fingerprint:
-/// left alone, a running DSH keeps the module it already imported and every fix
-/// in the new bridge waits for a restart. Rewriting both only when they are
-/// stale makes DSH hot-reload the plugin instead. A profile where the bridge was
-/// not installed is left untouched — this never installs it behind the user's
-/// back.
+/// this binary, the module DSH has loaded can be older still, and the pipe host
+/// can have died and left nothing behind. None of that is visible from the
+/// profile, so an installed bridge is always unloaded and loaded again — one
+/// short gap, and the running bridge always matches the app doing the asking.
+/// A profile where the bridge was not installed is left untouched: this never
+/// installs it behind the user's back.
 pub fn refresh() -> Result<bool, String> {
     let file = match patch_file() {
         Some(file) => file,
@@ -375,7 +445,7 @@ pub fn refresh() -> Result<bool, String> {
     let mut changed = false;
     write_sources(&mut changed)?;
     let entry = entry_yaml(&module_path(), &state_dir());
-    changed |= edit_profile(|text| with_plugin(text, &entry))?;
+    changed |= install_entry(&entry, true)?;
     if changed {
         crate::log::line("dsh plugin: refreshed the installed bridge to this build");
     }
@@ -627,5 +697,20 @@ mod tests {
         assert!(refreshed.contains("- id: web"));
         // And a second refresh of the same build changes nothing.
         assert_eq!(with_plugin(&refreshed, &fresh), refreshed);
+    }
+
+    #[test]
+    fn a_reload_unloads_the_entry_before_loading_it_again() {
+        // DSH keeps the namespace it imported first, so pointing the entry at a
+        // new file is not enough: the running plugin has to go first.
+        let entry = entry_yaml(Path::new("C:/x/bridge-new.mjs"), Path::new("C:/state"));
+        let off = disabled_entry(&entry);
+        assert!(off.contains("      enabled: false\n"), "the first write unloads it");
+        assert!(off.contains("bridge-new.mjs"), "and already names the new module");
+        // Unloading must not lose the rest of the entry.
+        assert!(off.contains("stateDir: 'C:/state'"));
+        assert!(off.contains(&format!("- id: {PLUGIN_ID_PREFIX}")));
+        // The live entry that follows carries no `enabled` key at all.
+        assert!(!entry.contains("enabled:"));
     }
 }
