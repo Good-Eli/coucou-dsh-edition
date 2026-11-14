@@ -800,8 +800,15 @@ function buildFinished(actions: ViewActions): ViewHost {
       // The final message, else the last step that is not a diff (FinishedView).
       const task = State.focusTask;
       title.textContent = task?.finalLine || (task && lastTextStep(task.steps)) || t("Session finished");
-      // Sessions from the Claude desktop app live there, not in a terminal.
-      const label = task?.id === "agent_claude-desktop" ? t("Open Claude") : t("Open terminal");
+      // Sessions from the Claude desktop app live there, not in a terminal; DSH
+      // is a window of its own. Saying "Open terminal" for either would send
+      // the user looking for something that does not exist.
+      const label =
+        task?.id === "agent_claude-desktop"
+          ? t("Open Claude")
+          : task?.id === "dsh"
+            ? t("Open DeepSeek Harness")
+            : t("Open terminal");
       const span = open.firstElementChild as HTMLElement;
       if (span.textContent !== label) span.textContent = label;
     },

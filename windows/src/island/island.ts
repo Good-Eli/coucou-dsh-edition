@@ -221,6 +221,10 @@ export class Island {
         const task = State.focusTask;
         // Sessions from the Claude desktop app live there, not in a terminal.
         if (task?.id === CLAUDE_DESKTOP_ID) void Bridge.openClaudeDesktop();
+        // DSH has no terminal either: it is a window of its own. Without this
+        // the button opened the session's folder in VS Code, which is not what
+        // "open the thing that is running this session" means.
+        else if (task?.id === DSH_ID) void Bridge.dshOpenWindow();
         else void Bridge.openSession(task?.sessionId ?? null, task?.sessionCwd ?? null);
       },
       // The ↗ button — same targets as openAgentTarget() on macOS.

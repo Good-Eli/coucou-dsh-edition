@@ -51,6 +51,13 @@
       "de": "DeepSeek Harness", "tr": "DeepSeek Harness", "ko": "DeepSeek Harness",
       "ja": "DeepSeek Harness"
     },
+    "Open DeepSeek Harness": {
+      "zh-Hans": "打开 DeepSeek Harness", "hi": "DeepSeek Harness खोलें", "es": "Abrir DeepSeek Harness",
+      "ar": "افتح DeepSeek Harness", "fr": "Ouvrir DeepSeek Harness", "bn": "DeepSeek Harness খুলুন",
+      "pt-BR": "Abrir DeepSeek Harness", "ru": "Открыть DeepSeek Harness", "id": "Buka DeepSeek Harness",
+      "de": "DeepSeek Harness öffnen", "tr": "DeepSeek Harness'i aç", "ko": "DeepSeek Harness 열기",
+      "ja": "DeepSeek Harness を開く"
+    },
     "Coucou bridge": {
       "zh-Hans": "Coucou 桥接", "hi": "Coucou ब्रिज", "es": "Puente de Coucou",
       "ar": "جسر Coucou", "fr": "Pont Coucou", "bn": "Coucou সেতু",

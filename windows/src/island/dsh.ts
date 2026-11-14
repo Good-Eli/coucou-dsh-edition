@@ -235,11 +235,13 @@ function noteSessionStates(previous: DshSnapshot | null, next: DshSnapshot) {
       Sound.play(now === "error" ? "error" : "finish");
       // One alert per snapshot: a burst of sessions ending together must not
       // open and close the island several times over.
-      if (!alerted && surfaceAlert(island, DSH_PILL_ID, now === "error" ? "error" : "finished")) {
-        alerted = true;
-      } else {
-        State.setPillBadge(DSH_PILL_ID, now === "error" ? "error" : "finished");
-      }
+      const shown =
+        !alerted && surfaceAlert(island, DSH_PILL_ID, now === "error" ? "error" : "finished");
+      if (shown) alerted = true;
+      else State.setPillBadge(DSH_PILL_ID, now === "error" ? "error" : "finished");
+      void Bridge.log(
+        `dsh: ${session.id} → ${now} (${shown ? "island alerted" : "badge only"})`,
+      );
     } else if (now === "thinking" || now === "working") {
       // A turn started: whatever the last one left behind is stale.
       State.setPillBadge(DSH_PILL_ID, null);

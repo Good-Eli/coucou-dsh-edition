@@ -8,6 +8,7 @@
 // shortcut opens it.
 
 import { Bridge, onEvent } from "../core/bridge";
+import { DSH_PILL_ID } from "../core/dsh";
 import type { BotEmoteName, IslandViewName } from "../core/layout";
 import { cyclePill, islandKeyAction, navigate, pillByNumber, type IslandKeyAction } from "../core/shortcuts";
 import { Sound } from "../core/sound";
@@ -94,6 +95,9 @@ export function runGlobalShortcut(host: ShortcutHost, action: string, resume: ()
     case "jumpToTerminal": {
       const task = State.focusTask;
       if (task?.id === CLAUDE_DESKTOP_ID) void Bridge.openClaudeDesktop();
+      // DSH is a window, not a terminal: bring it forward instead of opening
+      // its folder in VS Code.
+      else if (task?.id === DSH_PILL_ID) void Bridge.dshOpenWindow();
       else void Bridge.openSession(task?.sessionId ?? null, task?.sessionCwd ?? null);
       if (State.mode === "expanded") host.collapse();
       break;
