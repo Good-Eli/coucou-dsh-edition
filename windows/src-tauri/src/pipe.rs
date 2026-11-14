@@ -232,7 +232,7 @@ async fn handle(app: AppHandle, mut pipe: impl Relay) {
     if event != "PermissionRequest" {
         // The status line relay calls in with every Claude Code update: not log-worthy.
         if event != "StatusLine" {
-            log::line(format!("hook {event}"));
+            log::line(format!("hook {event}{}", who(&payload)));
         }
         let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
         pipe.finish();
@@ -247,7 +247,7 @@ async fn handle(app: AppHandle, mut pipe: impl Relay) {
     }
     crate::recap::note_request(&app, &id, &payload);
     payload["request_id"] = json!(id);
-    log::line(format!("hook PermissionRequest id={id}"));
+    log::line(format!("hook PermissionRequest id={id}{}", who(&payload)));
     let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
 
     let decision = wait_for_decision(&id, &mut rx).await;
@@ -291,6 +291,30 @@ fn note_session_window(pipe: &impl Relay, payload: &Value, event: &str) {
     if !ancestors.is_empty() {
         session_window::remember(session, crate::platform::window_owners(&ancestors));
     }
+}
+
+/// Who a hook event came from, for the log: the agent tag and the folder.
+///
+/// "hook PreToolUse" alone cannot answer the question that actually comes up —
+/// which tool put a pill on screen, and why two pills look like the same thing.
+/// Only the tag and the folder's own name are written: never a full path, a
+/// command or a prompt.
+fn who(payload: &Value) -> String {
+    let mut out = String::new();
+    if let Some(agent) = payload.get("coucou_agent").and_then(Value::as_str) {
+        out.push_str(&format!(" agent={agent}"));
+    }
+    if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
+        let folder = cwd
+            .trim_end_matches(['\\', '/'])
+            .rsplit(['\\', '/'])
+            .next()
+            .unwrap_or_default();
+        if !folder.is_empty() {
+            out.push_str(&format!(" folder={folder}"));
+        }
+    }
+    out
 }
 
 /// Two waits: a short one for "the card is up", then the long one for a human.

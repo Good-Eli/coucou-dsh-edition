@@ -47,6 +47,7 @@ beforeEach(() => {
   mock.timers.enable({ apis: ["setTimeout"] });
   clearReplies();
   resetDshApprovalMemory();
+  Dsh.snapshot = null;
   asked = [];
   State.tasks = [];
   State.focusId = null;
