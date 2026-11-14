@@ -35,9 +35,12 @@ pub struct Snapshot {
     pub status: String,
     pub error: Option<String>,
     pub version: Option<String>,
-    /// False when the plugin refused to intercept approvals (version mismatch,
-    /// token file not private, …). The island must then show no card at all.
+    /// False when the plugin refused to intercept approvals (token file not
+    /// private, or a host it cannot listen to). The island must then show no
+    /// card at all.
     pub approvals_enabled: bool,
+    /// The host's default approval policy (`ask` / `never`), when it says.
+    pub approval_policy: Option<String>,
     /// Whether the pipe the host created is private to this user.
     pub hardened: bool,
     pub sessions: Vec<Session>,
@@ -164,6 +167,7 @@ fn set_offline(app: &AppHandle, status: &str, error: impl Into<Option<String>>) 
         s.pending.clear();
         s.active_session = None;
         s.approvals_enabled = false;
+        s.approval_policy = None;
         s.hardened = false;
     });
     if let Some(dsh) = app.try_state::<Dsh>() {
@@ -301,6 +305,7 @@ async fn handshake(app: &AppHandle, conn: &mut Conn, token: &str) -> Result<(), 
 fn adopt(app: &AppHandle, ready: Ready) {
     let compatible = ready.compatibility.is_ok();
     let approvals = ready.approvals.is_enabled();
+    let approval_policy = ready.approvals.policy.clone();
     let hardened = ready.pipe.hardened.unwrap_or(false);
     let version = ready.compatibility.version.clone();
     let problems = ready.compatibility.problems.clone();
@@ -312,6 +317,7 @@ fn adopt(app: &AppHandle, ready: Ready) {
         s.error = if problems.is_empty() { None } else { Some(problems.join("; ")) };
         s.version = version;
         s.approvals_enabled = approvals;
+        s.approval_policy = approval_policy;
         s.hardened = hardened;
         s.sessions = sessions;
         s.catalog = catalog;

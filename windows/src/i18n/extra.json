@@ -204,6 +204,21 @@
       "ko": "다음 요청에 적용됩니다",
       "ja": "次のリクエストに適用されます"
     },
+    "This session never asks for approval": {
+      "zh-Hans": "此会话从不请求批准",
+      "hi": "यह सत्र कभी स्वीकृति नहीं माँगता",
+      "es": "Esta sesión nunca pide aprobación",
+      "ar": "هذه الجلسة لا تطلب الموافقة أبدًا",
+      "fr": "Cette session ne demande jamais d'autorisation",
+      "bn": "এই সেশন কখনো অনুমোদন চায় না",
+      "pt-BR": "Esta sessão nunca pede aprovação",
+      "ru": "Эта сессия не запрашивает подтверждение",
+      "id": "Sesi ini tidak pernah meminta persetujuan",
+      "de": "Diese Sitzung fragt nie nach einer Freigabe",
+      "tr": "Bu oturum hiçbir zaman onay istemez",
+      "ko": "이 세션은 승인을 요청하지 않습니다",
+      "ja": "このセッションは承認を求めません"
+    },
     "Open DSH": {
       "zh-Hans": "打开 DSH",
       "hi": "DSH खोलें",

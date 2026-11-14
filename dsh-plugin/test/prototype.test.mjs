@@ -15,16 +15,19 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { apply, maskSecrets, clip, tokenMatches, pipeName, PROTOCOL, isSupportedDsh } from '../bridge.mjs';
+import { apply, maskSecrets, clip, tokenMatches, pipeName, PROTOCOL } from '../bridge.mjs';
 import { isPrivateSddl } from '../state-acl.mjs';
 
 const SID = 'S-1-5-21-1-2-3-1001';
 
 /** A Cordis-shaped context with the services the plugin reads. */
-function fakeCtx({ withLlm = true, agents } = {}) {
+function fakeCtx({ withLlm = true, agents, approval } = {}) {
   const listeners = new Map();
+  /** The real event registry shape the plugin reads to report answerer order. */
+  const hooks = {};
   const services = new Map();
   const disposers = [];
+  const registered = [];
   if (withLlm) {
     services.set('llm', {
       listProviders: () => [
@@ -40,16 +43,27 @@ function fakeCtx({ withLlm = true, agents } = {}) {
       }),
     });
   }
+  if (approval) services.set('approval', approval);
   services.set('agents', agents ?? { list: () => [] });
 
-  return {
+  const ctx = {
     listeners,
     services,
     disposers,
+    registered,
+    events: { _hooks: hooks },
     testChannel: null,
-    on(event, handler) {
+    on(event, handler, options) {
+      registered.push({ event, options });
+      const prepend = typeof options === 'object' ? options?.prepend === true : options === true;
+      const list = hooks[event] ?? (hooks[event] = []);
+      const record = { callback: handler };
+      if (prepend) list.unshift(record);
+      else list.push(record);
       if (!listeners.has(event)) listeners.set(event, []);
-      listeners.get(event).push(handler);
+      const callbacks = listeners.get(event);
+      if (prepend) callbacks.unshift(handler);
+      else callbacks.push(handler);
     },
     get(name) {
       return services.get(name);
@@ -69,10 +83,31 @@ function fakeCtx({ withLlm = true, agents } = {}) {
       const list = listeners.get(event) ?? [];
       return Promise.all(list.map((fn) => fn(...args)));
     },
+    /**
+     * Cordis waterfall semantics: listeners run in registration order, and the
+     * first one that does not call `next()` answers the request.
+     */
+    waterfall(event, ...args) {
+      const inner = args.pop();
+      const list = [...(listeners.get(event) ?? [])];
+      const dispatch = () => {
+        const fn = list.shift();
+        if (!fn) return inner();
+        let called = false;
+        const next = () => {
+          if (called) throw new Error('next() called multiple times');
+          called = true;
+          return dispatch();
+        };
+        return fn(...args, next);
+      };
+      return dispatch();
+    },
     has(event) {
       return (listeners.get(event) ?? []).length > 0;
     },
   };
+  return ctx;
 }
 
 const openBridges = [];
@@ -83,12 +118,13 @@ test.afterEach(() => {
 /** Starts the plugin with an in-memory channel and returns its handles. */
 function startBridge(overrides = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), 'coucou-dsh-'));
-  const ctx = fakeCtx({ withLlm: overrides.withLlm !== false, agents: overrides.agents });
+  const ctx =
+    overrides.ctx ??
+    fakeCtx({ withLlm: overrides.withLlm !== false, agents: overrides.agents, approval: overrides.approval });
   apply(ctx, {
     stateDir,
     testChannel: true,
     skipSecurityChecks: true,
-    skipVersionCheck: true,
     logLevel: 'error',
     ...overrides,
   });
@@ -273,7 +309,7 @@ test('a wrong protocol version is refused', async () => {
   assert.doesNotMatch(bridge.channel.outgoing.join(''), /"t":"ready"/);
 });
 
-// ── the compatibility gate ───────────────────────────────────────────────────
+// ── the seam is chosen by capability, never by version tag ───────────────────
 
 test('a missing llm service costs the catalog, never the approval seam', () => {
   const bridge = startBridge({ withLlm: false });
@@ -282,21 +318,95 @@ test('a missing llm service costs the catalog, never the approval seam', () => {
   assert.equal(bridge.ctx.has('approval/request'), true, 'must still intercept approvals');
 });
 
-test('a newer release candidate of a supported API is accepted', () => {
-  // The bug this replaces: DSH 0.2.2-rc.3 was refused because the pin said
-  // 0.2.2-rc.1, and every approval silently fell back to the DSH prompt.
-  assert.equal(isSupportedDsh('0.2.2-rc.3'), true);
-  assert.equal(isSupportedDsh('0.2.2'), true);
-  assert.equal(isSupportedDsh('0.2.2-rc.1'), true);
-  assert.equal(isSupportedDsh('0.2.2+build.7'), true);
+test('a DSH whose version cannot be read still gets the approval seam', () => {
+  // The tests run under plain Node, where the DSH manifest is nowhere near
+  // `process.execPath`: the version read fails. That used to be fatal — the
+  // seam was switched off on a version string the plugin could not even read.
+  const bridge = startBridge();
+  assert.equal(bridge.ctx.has('approval/request'), true);
 });
 
-test('a different API base is refused', () => {
-  assert.equal(isSupportedDsh('0.2.3'), false);
-  assert.equal(isSupportedDsh('0.3.0-rc.1'), false);
-  assert.equal(isSupportedDsh('1.0.0'), false);
-  assert.equal(isSupportedDsh(''), false);
-  assert.equal(isSupportedDsh(null), false);
+test('the plugin never asks the version before registering the answerer', () => {
+  // Nothing in the file may gate the seam on a version tag again: a DSH update
+  // that keeps the API must keep the approvals.
+  const source = readFileSync(new URL('../bridge.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /isSupportedDsh|SUPPORTED_DSH/);
+});
+
+test('the island registers its answerer first, ahead of any browser answerer', () => {
+  const bridge = startBridge();
+  const registered = bridge.ctx.registered.filter((r) => r.event === 'approval/request');
+  assert.equal(registered.length, 1);
+  assert.equal(registered[0].options?.prepend, true, 'a plain listener would sit behind DSH’s own UI');
+});
+
+test('the request reaches the island, not the browser answerer that registered first', async () => {
+  // The live defect: DSH’s browser approval UI is an `approval/request`
+  // answerer registered when its client connects. A waterfall stops at the
+  // first listener that does not call next(), so the island — registered later,
+  // e.g. by a hot patch — never saw a request and DSH prompted in its own
+  // window. This is that order, reproduced.
+  const ctx = fakeCtx();
+  let browserAsked = 0;
+  ctx.on('approval/request', async () => {
+    browserAsked++;
+    return 'allowed-once';
+  });
+
+  const bridge = startBridge({ ctx });
+  handshake(bridge);
+  const pending = ctx.waterfall('approval/request', approvalRequest(), async () => 'unavailable');
+
+  const asked = lastFrame(bridge);
+  assert.equal(asked.t, 'approval.asked', 'the island must be asked first');
+  clientSend(bridge, { t: 'approval.ack', requestId: asked.requestId });
+  clientSend(bridge, { t: 'approval.answer', requestId: asked.requestId, decision: 'deny' });
+
+  assert.equal(await pending, 'rejected');
+  assert.equal(browserAsked, 0, 'the browser answerer must not have seen the request');
+});
+
+test('when the island cannot show the card it still hands the request on', async () => {
+  // Prepend must not become a veto: no client, no ack, decline or timeout all
+  // call next(), so DSH's own prompt still answers.
+  const bridge = startBridge();
+  let delegated = 0;
+  const outcome = await bridge.ctx.waterfall('approval/request', approvalRequest(), async () => {
+    delegated++;
+    return 'unavailable';
+  });
+  assert.equal(delegated, 1);
+  assert.notEqual(outcome, 'allowed-once');
+});
+
+test('the session carries the approval policy DSH will apply', async () => {
+  const approval = {
+    config: { policy: 'ask' },
+    overrideOf: (session) => (session?.id === 'session-test' ? 'never' : undefined),
+  };
+  const bridge = startBridge({ approval });
+  handshake(bridge);
+  const agent = { session: { id: 'session-test', header: { cwd: 'C:/work' } } };
+  await bridge.ctx.fire('agent/created', { agent });
+
+  const upsert = bridge.channel.outgoing
+    .join('')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line))
+    .filter((f) => f.t === 'session.upsert')
+    .pop();
+  assert.equal(upsert.session.approvalPolicy, 'never', 'a session policy of never means no card can appear');
+});
+
+test('ready reports the approval policy and the version, without gating on it', async () => {
+  const bridge = startBridge({ approval: { config: { policy: 'never' }, overrideOf: () => undefined } });
+  handshake(bridge);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const ready = JSON.parse(bridge.channel.outgoing.join('').trim().split('\n')[0]);
+  assert.equal(ready.approvals.enabled, true);
+  assert.equal(ready.approvals.policy, 'never');
+  assert.equal(ready.compatibility.ok, true);
 });
 
 test('a supported host does register the approval answerer', () => {

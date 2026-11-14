@@ -61,6 +61,9 @@ impl Compatibility {
 #[serde(rename_all = "camelCase")]
 pub struct Approvals {
     pub enabled: Option<bool>,
+    /// The host's default policy: `ask` or `never`. Reported so the island can
+    /// say why no card will ever appear, instead of looking broken.
+    pub policy: Option<String>,
 }
 
 impl Approvals {
@@ -138,6 +141,11 @@ pub struct Session {
     pub state: Option<String>,
     #[serde(default)]
     pub since: Option<i64>,
+    /// The session's approval policy (`ask` or `never`) as the host reported it.
+    /// Under `never` DSH rejects a request before any answerer is consulted, so
+    /// no card can appear no matter how healthy the bridge is.
+    #[serde(default)]
+    pub approval_policy: Option<String>,
 }
 
 /// The first frame after a successful handshake.
@@ -355,6 +363,24 @@ mod tests {
         assert!(!ready.compatibility.is_ok(), "no compatibility means not ok");
         assert!(!ready.approvals.is_enabled(), "no approvals means none may be answered");
         assert!(ready.sessions.is_empty());
+    }
+
+    #[test]
+    fn the_policy_travels_so_a_missing_card_can_be_explained() {
+        // A session DSH will never ask about looks exactly like a broken bridge
+        // from the island: the policy is what tells them apart.
+        let line = r#"{"t":"ready","protocol":1,"approvals":{"enabled":true,"policy":"never"},
+            "sessions":[{"id":"s1","approvalPolicy":"never"},
+                        {"id":"s2","approvalPolicy":"ask"},
+                        {"id":"s3"}]}"#;
+        let Frame::Ready(ready) = serde_json::from_str::<Frame>(line).expect("parses") else {
+            panic!("expected ready")
+        };
+        assert!(ready.approvals.is_enabled());
+        assert_eq!(ready.approvals.policy.as_deref(), Some("never"));
+        assert_eq!(ready.sessions[0].approval_policy.as_deref(), Some("never"));
+        assert_eq!(ready.sessions[1].approval_policy.as_deref(), Some("ask"));
+        assert_eq!(ready.sessions[2].approval_policy, None, "an older plugin simply says nothing");
     }
 
     #[test]

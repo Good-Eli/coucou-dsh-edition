@@ -1299,6 +1299,18 @@ pub fn run() {
 
             log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION")));
             hooks::ensure_hook_exe(&handle);
+            // The installed bridge can be older than this build. DSH caches a
+            // module by its URL, so a stale copy keeps running until DSH
+            // restarts — and every fix in the bridge, the approvals included,
+            // waits with it. Refreshing here makes the running DSH hot-reload
+            // the new one. A profile without the bridge is left alone.
+            std::thread::spawn(move || match dsh::install::refresh() {
+                Ok(true) => {
+                    log::line("dsh plugin: the installed bridge was out of date and is now refreshed")
+                }
+                Ok(false) => {}
+                Err(error) => log::line(format!("dsh plugin: cannot refresh the bridge: {error}")),
+            });
             pipe::start(handle.clone());
             dsh::start(handle.clone());
             phone_link::start_if_enabled(&handle);

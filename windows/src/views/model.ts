@@ -12,6 +12,7 @@ import {
   choiceFor,
   effortsFor,
   modelChoices,
+  neverAsks,
   selectionLine,
   type DshSession,
 } from "../core/dsh";
@@ -140,9 +141,14 @@ export function buildModel(actions: ViewActions): ViewHost {
           ? t("Applying…")
           : DshConfig.appliesNext && current?.state && current.state !== "idle" && current.state !== "finished"
             ? t("Applies to the next request")
-            : choice && choice.efforts.length === 0
-              ? t("This model has no reasoning effort")
-              : "";
+            // A session set to never ask cannot produce a card, and that is
+            // worth saying where the session is being looked at: otherwise the
+            // island simply looks broken.
+            : neverAsks(Dsh.snapshot, current)
+              ? t("This session never asks for approval")
+              : choice && choice.efforts.length === 0
+                ? t("This model has no reasoning effort")
+                : "";
       if (text !== drawnNote) {
         drawnNote = text;
         note.textContent = text;

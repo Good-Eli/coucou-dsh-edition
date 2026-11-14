@@ -38,30 +38,23 @@ export const PROTOCOL = 1;
  * this file in the entry's URL for exactly that reason; this number is what
  * makes the new code visible in `bridge.log` once it does load.
  */
-export const BUILD = 8;
-
-/** DSH versions this prototype was written against, tag included. */
-export const SUPPORTED_DSH = ['0.2.2-rc.1'];
+export const BUILD = 9;
 
 /**
- * The API surface this plugin was written against, without the prerelease tag.
+ * Why this plugin does not decide its worth from the DSH version string.
  *
- * A pin on `0.2.2-rc.1` meant every release candidate of the same API turned the
- * approval seam off: DSH moved to `0.2.2-rc.3`, the version check failed, and
- * no request was ever intercepted again. A tag inside a supported base is the
- * same surface, so it is accepted; a different base is not.
+ * The previous build pinned the seam to `0.2.2-rc.1`. DSH moved to
+ * `0.2.2-rc.3`, the check failed, and the plugin quietly turned its own
+ * approvals off — no request was intercepted again until the pin was widened.
+ * The version is a tag the host prints; it is not the API this file calls, and
+ * a release that keeps the API must not be treated as a break. So the version is
+ * read, logged and reported to Coucou, and nothing is disabled because of it.
+ *
+ * What the plugin needs is the `approval/request` seam. It verifies that by
+ * registering on it and by looking for the approval service at load. If a future
+ * DSH renames the seam, the plugin keeps running and the log says what it found,
+ * instead of switching the safety net off on a version number it cannot know.
  */
-export const SUPPORTED_DSH_BASES = ['0.2.2'];
-
-/** True when this DSH speaks an API the plugin knows. */
-export function isSupportedDsh(version) {
-  if (typeof version !== 'string' || version === '') return false;
-  if (SUPPORTED_DSH.includes(version)) return true;
-  const base = version.split('-')[0].split('+')[0];
-  return SUPPORTED_DSH_BASES.includes(base);
-}
-
-
 
 const MAX_LINE = 1 << 20;
 const HEARTBEAT_MS = 5000;
@@ -189,27 +182,24 @@ function resolveDshVersion() {
 /**
  * Checks that this DSH can actually support the integration.
  *
- * Only the two things the approval seam truly needs are fatal: a way to listen
- * to events, and a version whose API the plugin knows. The model catalog is a
- * convenience — it is read lazily through `ctx.get('llm')`, and a host that
- * cannot answer simply shows no models. Gating the seam on it turned a missing
- * nicety into a missing safety net, so a missing `llm` is reported as a note.
+ * Only one thing is fatal: a way to listen to events. The version is reported,
+ * never judged — a tag is not the API (see the note above `BUILD`), and gating
+ * on it is what silently killed approvals on a DSH update. The approval service
+ * and the model catalog are reported as notes: the service is what the seam is
+ * built on, and the catalog is a convenience read lazily through `ctx.get('llm')`.
+ * Gating the seam on either turned a missing nicety into a missing safety net.
  */
 function inspectCompatibility(ctx, config, log) {
   const problems = [];
   const notes = [];
   const version = resolveDshVersion();
 
-  if (config.skipVersionCheck !== true) {
-    if (!version) problems.push('the DSH version could not be read');
-    else if (!isSupportedDsh(version)) {
-      problems.push(
-        `DSH ${version} is not supported (expected ${SUPPORTED_DSH_BASES.join(', ')} or ${SUPPORTED_DSH.join(', ')})`,
-      );
-    }
-  }
+  if (typeof ctx.on !== 'function') problems.push('ctx.on is missing, so no event can be heard');
 
-  if (typeof ctx.on !== 'function') problems.push('ctx.on is missing');
+  if (!version) notes.push('the DSH version could not be read (reported, not judged)');
+  if (!ctx.get?.('approval')) {
+    notes.push('the approval service is not mounted yet; DSH may ask in its own window');
+  }
 
   const llm = ctx.get?.('llm');
   if (!llm) {
@@ -221,7 +211,7 @@ function inspectCompatibility(ctx, config, log) {
   }
 
   if (problems.length > 0) log('warn', `compat: ${problems.join('; ')}`);
-  else log('info', `compat: DSH ${version ?? '(unknown)'} looks usable`);
+  else log('info', `compat: DSH ${version ?? '(unknown version)'}; the version is a label, not a gate`);
   if (notes.length > 0) log('warn', `compat: ${notes.join('; ')}`);
 
   return { ok: problems.length === 0, version, problems, notes };
@@ -518,6 +508,10 @@ export function apply(ctx, rawConfig) {
       model: selectionOf(agent),
       state: previous?.state ?? 'idle',
       since: previous?.since ?? Date.now(),
+      // DSH only asks when the session's policy is `ask`; under `never` no card
+      // can ever appear. Saying which one is in force is the difference between
+      // "the island is broken" and "DSH was told not to ask".
+      approvalPolicy: approvalPolicyOf(ctx, agent),
     });
     send({ t: 'session.upsert', session: sessions.get(session.id) });
   };
@@ -670,6 +664,15 @@ export function apply(ctx, rawConfig) {
         });
         break;
 
+      case 'approval/policy':
+        // The user switched the session's permission preset. Only `ask` makes
+        // DSH consult an answerer at all; the island shows the difference.
+        if (record) {
+          record.approvalPolicy = event.data?.policy ?? record.approvalPolicy ?? null;
+          send({ t: 'session.upsert', session: record });
+        }
+        break;
+
       case 'model/selection':
         if (record) {
           record.model = {
@@ -757,7 +760,7 @@ export function apply(ctx, rawConfig) {
               directoryPrivate: security.dirPrivate,
             },
             compatibility: { ok: compat.ok, version: compat.version, problems: compat.problems },
-            approvals: { enabled: approvalsEnabled },
+            approvals: { enabled: approvalsEnabled, policy: approvalPolicyOf(ctx, null) },
             catalog: catalogState,
             sessions: [...sessions.values()],
           });
@@ -849,19 +852,49 @@ export function apply(ctx, rawConfig) {
   log('info', 'pipe: ' + channel.kind + ' starting');
 
   /**
-   * Approvals may only be intercepted when a DSH we understand is running and
-   * the token file is actually private. A pipe that is missing or dead is not
-   * a risk: without a client, every request delegates to DSH's own prompt.
+   * Approvals are intercepted when the token file is actually private. The DSH
+   * version plays no part: it is a label, not the seam (see the note above
+   * `BUILD`). A pipe that is missing or dead is not a risk either — without a
+   * client, every request delegates to DSH's own prompt.
    */
   const approvalsEnabled = compat.ok && tokenPrivate;
   if (!approvalsEnabled) {
     const why = [];
-    if (!compat.ok) why.push('incompatible DSH');
+    if (!compat.ok) why.push('this host cannot be listened to');
     if (!tokenPrivate) why.push('token file is not private');
     log('warn', `approvals: disabled (${why.join(', ')}); DSH keeps its own prompts`);
   } else {
-    ctx.on('approval/request', onApproval);
-    log('info', 'approvals: enabled; DSH asks through the island first');
+    // DSH's own browser UI is an `approval/request` answerer too, and it is
+    // registered when its client connects — before a plugin that a hot patch
+    // reloads. A waterfall stops at the first listener that does not call
+    // `next()`, so an island registered behind it would never see a request:
+    // DSH would prompt in its own window and the card would never appear.
+    // Prepending puts the island in front regardless of registration order.
+    const before = approvalHooks(ctx);
+    ctx.on('approval/request', onApproval, { prepend: true });
+    const ours = approvalHooks(ctx)?.[0] ?? null;
+    log(
+      'info',
+      `approvals: enabled; the island answers first (${before ? `${before.length} other answerer(s) were already registered` : 'order unreadable'})`,
+    );
+    if (ours && approvalHooks(ctx)?.[0] !== ours) {
+      log('warn', 'approvals: another answerer took the front; DSH may prompt in its own window');
+    }
+    // Clients connect after the host starts. Look once more after they have had
+    // time to register their answerer: this line is the only way to tell
+    // "another plugin is ahead of the island" from "DSH never asked".
+    const timer = setTimeout(() => {
+      const hooks = approvalHooks(ctx);
+      if (!hooks) return;
+      const index = ours ? hooks.indexOf(ours) : -1;
+      if (index > 0) {
+        log('warn', `approvals: ${index} answerer(s) are ahead of the island; DSH will prompt in its own window`);
+      } else if (index === 0) {
+        log('debug', 'approvals: the island is still first in the answerer chain');
+      }
+    }, 5000);
+    if (typeof timer.unref === 'function') timer.unref();
+    ctx.effect(() => () => clearTimeout(timer));
   }
 
   ctx.on('session/event', onSessionEvent);
@@ -885,6 +918,46 @@ export function apply(ctx, rawConfig) {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * The live `approval/request` listener list, or null when it cannot be read.
+ *
+ * Cordis keeps it in the event service's own registry; there is no public
+ * "who answers first" API. Reading it is a diagnostic, not a dependency: every
+ * failure here is swallowed so a host that renames the field only loses the log
+ * line, never the plugin.
+ */
+function approvalHooks(ctx) {
+  try {
+    const hooks = ctx.events?._hooks?.['approval/request'];
+    return Array.isArray(hooks) ? hooks : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The approval policy DSH applies to one agent's session, or null.
+ *
+ * `never` means DSH rejects a request before any answerer sees it, so the island
+ * cannot show a card however healthy the bridge is. Coucou reports that to the
+ * user instead of looking broken. Both reads are best-effort: a host without the
+ * service (or with a renamed one) simply reports nothing.
+ */
+function approvalPolicyOf(ctx, agent) {
+  try {
+    const approval = ctx.get?.('approval');
+    if (!approval) return null;
+    const session = agent?.session;
+    if (session && typeof approval.overrideOf === 'function') {
+      const override = approval.overrideOf(session);
+      if (override) return override;
+    }
+    return approval.config?.policy ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function parseJson(value) {
   if (typeof value !== 'string') return value ?? {};
@@ -922,4 +995,4 @@ function currentUserSid() {
   }
 }
 
-export default { name, apply, PROTOCOL, SUPPORTED_DSH, maskSecrets, clip };
+export default { name, apply, PROTOCOL, maskSecrets, clip };

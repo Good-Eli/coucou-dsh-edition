@@ -43,6 +43,8 @@ export interface DshSession {
   model?: DshSelection | null;
   state?: string | null;
   since?: number | null;
+  /** `ask` or `never`, as DSH reported it. Under `never` no card can appear. */
+  approvalPolicy?: string | null;
 }
 
 /** A question waiting for a click. */
@@ -69,6 +71,8 @@ export interface DshSnapshot {
   error?: string | null;
   version?: string | null;
   approvalsEnabled: boolean;
+  /** The host's default approval policy (`ask` / `never`), when it says. */
+  approvalPolicy?: string | null;
   hardened: boolean;
   sessions: DshSession[];
   catalog: DshCatalog;
@@ -102,6 +106,20 @@ export function activeSession(snapshot: DshSnapshot | null): DshSession | null {
 export function sessionFor(snapshot: DshSnapshot | null, sessionId: string | null | undefined): DshSession | null {
   if (!snapshot || !sessionId) return null;
   return snapshot.sessions.find((s) => s.id === sessionId) ?? null;
+}
+
+/**
+ * Whether DSH will never ask this session for approval.
+ *
+ * DSH decides the policy before any answerer is consulted: under `never` every
+ * request is rejected outright, so no card can appear however healthy the
+ * bridge is. From the island the two look identical, which is why the policy is
+ * carried at all. The session's own value wins; the host default is the
+ * fallback, and no report at all means no claim either way.
+ */
+export function neverAsks(snapshot: DshSnapshot | null, session: DshSession | null): boolean {
+  const policy = session?.approvalPolicy ?? snapshot?.approvalPolicy ?? null;
+  return policy === "never";
 }
 
 /** A model's display name, from the catalog, never invented. */

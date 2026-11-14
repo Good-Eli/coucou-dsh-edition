@@ -104,12 +104,23 @@ pub fn without_plugin(text: &str) -> String {
 }
 
 /// The patch file with the bridge entry added, keeping everything else as it
-/// was. Returns the text unchanged when it is already there.
+/// was. An entry that is already there is refreshed when this build's entry
+/// differs from it.
+///
+/// The module URL carries a fingerprint of the bridge source. DSH caches an
+/// imported module by its URL, so a host that keeps the old entry keeps running
+/// the old code — an updated bridge would not reach a running DSH at all. The
+/// entry is therefore rewritten in place when it is stale; a second install of
+/// the same build changes nothing.
 pub fn with_plugin(text: &str, entry: &str) -> String {
-    if is_installed(text) {
-        return text.to_string();
-    }
     let mut lines = split_lines(text);
+    if let Some((start, end)) = find_entry(&lines) {
+        if lines[start..end].concat() == entry {
+            return text.to_string();
+        }
+        lines.splice(start..end, [entry.to_string()]);
+        return lines.concat();
+    }
     match find_insert_block(&lines) {
         // The usual case: add to the list that is already there, at its top, so
         // the entry sits next to the comment that explains it.
@@ -291,6 +302,44 @@ pub fn remove() -> Result<Status, String> {
         if changed { "removed from the profile" } else { "was not installed" }
     ));
     Ok(status(false))
+}
+
+/// Brings an installed bridge up to this build's sources and entry.
+///
+/// Called when Coucou starts. The copy on disk can be older than the one inside
+/// this binary, and the profile entry carries a fingerprint of the source: left
+/// alone, a running DSH keeps the module it already imported and every fix in
+/// the new bridge waits for a restart. Rewriting the entry only when it is stale
+/// makes DSH hot-reload the plugin instead. A profile where the bridge was not
+/// installed is left untouched — this never installs it behind the user's back.
+pub fn refresh() -> Result<bool, String> {
+    let file = match patch_file() {
+        Some(file) => file,
+        None => return Ok(false),
+    };
+    let text = std::fs::read_to_string(&file).map_err(|e| format!("cannot read the profile: {e}"))?;
+    if !is_installed(&text) {
+        return Ok(false);
+    }
+
+    let dir = plugin_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let mut changed = false;
+    for (name, source) in SOURCES {
+        let dest = dir.join(name);
+        if std::fs::read_to_string(&dest).ok().as_deref() == Some(source) {
+            continue;
+        }
+        std::fs::write(&dest, source).map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
+        changed = true;
+    }
+
+    let entry = entry_yaml(&module_path(), &state_dir());
+    changed |= edit_profile(|text| with_plugin(text, &entry))?;
+    if changed {
+        crate::log::line("dsh plugin: refreshed the installed bridge to this build");
+    }
+    Ok(changed)
 }
 #[cfg(test)]
 mod tests {
@@ -477,5 +526,27 @@ mod tests {
         assert!(entry.contains(&format!("bridge.mjs?rev={rev}'")), "the URL must carry it");
         // Two calls agree, so reinstalling does not churn the entry.
         assert_eq!(rev, bridge_rev());
+    }
+
+    #[test]
+    fn a_stale_entry_is_refreshed_in_place() {
+        // The defect: an entry with an older fingerprint was left alone, so DSH
+        // kept the module it had already imported and a fixed bridge could not
+        // reach a running host without a restart.
+        let old = entry_yaml(Path::new("C:/x/bridge.mjs"), Path::new("C:/state"))
+            .replace("?rev=", "?rev=00000000-old-");
+        let base = format!("- id: web\n  name: '@deepseek-ai/dsh-web'\n");
+        let installed = with_plugin(&base, &old);
+        let fresh = entry_yaml(Path::new("C:/x/bridge.mjs"), Path::new("C:/state"));
+
+        let refreshed = with_plugin(&installed, &fresh);
+        assert_ne!(refreshed, installed);
+        assert_eq!(refreshed.matches(PLUGIN_ID_PREFIX).count(), 1, "no duplicate entry");
+        assert!(refreshed.contains(&fresh), "the entry is this build's");
+        assert!(!refreshed.contains("00000000-old-"));
+        // Everything that is not ours survives.
+        assert!(refreshed.contains("- id: web"));
+        // And a second refresh of the same build changes nothing.
+        assert_eq!(with_plugin(&refreshed, &fresh), refreshed);
     }
 }
