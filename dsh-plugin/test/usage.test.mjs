@@ -190,10 +190,13 @@ test('a handover leaves no timer and no listener behind', async () => {
   const stop = source.slice(source.indexOf('stop: () => {'));
   const body = stop.slice(0, stop.indexOf('},\n  });'));
   assert.match(body, /clearInterval\(usageTimer\)/, 'the usage timer stops with the bridge');
-  assert.match(body, /unhook\?\.\(\)/, 'and its approval listener is removed by its own disposer');
-  // The list search stays as a fallback, but it cannot be the only way: it did
-  // not match the wrapped entry, which is how the listeners accumulated.
-  assert.match(body, /approvalHooks\(ctx\)/, 'the fallback is still there');
+  assert.match(body, /unhook\?\.\(\)/, 'and its approval listener is released by its own disposer');
+  // The host binds the callback before storing it, so the stored entry's
+  // `callback` is not `onApproval`: matching on that found nothing and the
+  // listeners piled up. The entry itself is kept and removed by identity.
+  assert.match(body, /hook\.indexOf\(ours\)/, 'the stored entry is removed by identity');
+  assert.doesNotMatch(body, /h\.callback === onApproval/, 'which is what never matched');
+  assert.match(source, /let unhook = null;/, 'both handles outlive the approvals branch');
 
   // And the timer really does stop when the host disposes the plugin.
   const { calls } = stubUsage([[row(1, 1, 0.01)]]);

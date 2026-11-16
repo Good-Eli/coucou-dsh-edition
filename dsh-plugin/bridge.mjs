@@ -910,6 +910,12 @@ export function apply(ctx, rawConfig) {
    * client, every request delegates to DSH's own prompt.
    */
   const approvalsEnabled = compat.ok && tokenPrivate;
+  /**
+   * How to take this instance's approval listener out again, and the entry the
+   * host actually stored for it. Both are needed: see `stop` below.
+   */
+  let unhook = null;
+  let ours = null;
   if (!approvalsEnabled) {
     const why = [];
     if (!compat.ok) why.push('this host cannot be listened to');
@@ -923,12 +929,15 @@ export function apply(ctx, rawConfig) {
     // DSH would prompt in its own window and the card would never appear.
     // Prepending puts the island in front regardless of registration order.
     const before = approvalHooks(ctx);
-    // The disposer is kept, not thrown away: it is what removes this listener
-    // when the bridge hands over to a newer copy of itself. Searching the hook
-    // list for our callback afterwards did not match the wrapped entry, so every
-    // reload left a dead answerer behind (the log grew to "38 other answerers").
-    const unhook = ctx.on('approval/request', onApproval, { prepend: true });
-    const ours = approvalHooks(ctx)?.[0] ?? null;
+    // Both handles are kept, not thrown away: they are what removes this
+    // listener when the bridge hands over to a newer copy of itself. The host
+    // binds the callback before storing it, so the stored entry's `callback` is
+    // not `onApproval` — matching on that never found anything, and every
+    // reload left a dead answerer behind ("38 other answerer(s)" and counting).
+    // `ours` is the entry itself, taken while it is known to be at the front.
+    const unhookThis = ctx.on('approval/request', onApproval, { prepend: true });
+    unhook = unhookThis;
+    ours = approvalHooks(ctx)?.[0] ?? null;
     log(
       'info',
       `approvals: enabled; the island answers first (${before ? `${before.length} other answerer(s) were already registered` : 'order unreadable'})`,
@@ -998,16 +1007,19 @@ export function apply(ctx, rawConfig) {
         }
       }
       // The approval listener is not in `offs` (it is registered with prepend),
-      // so it is unhooked by its own disposer; the list search stays as a
-      // fallback for a host whose `on()` returns nothing.
+      // so it is released here: by its own disposer, and — because a host whose
+      // `on()` returns something else would leave it behind — by taking our own
+      // entry out of the hook list by identity.
       try {
         unhook?.();
       } catch {
         /* already gone */
       }
       const hook = approvalHooks(ctx);
-      const ours = hook?.findIndex((h) => h.callback === onApproval) ?? -1;
-      if (ours >= 0) hook.splice(ours, 1);
+      if (hook) {
+        const at = ours ? hook.indexOf(ours) : -1;
+        if (at >= 0) hook.splice(at, 1);
+      }
       channel.stop();
     },
   });
