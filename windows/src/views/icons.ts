@@ -83,4 +83,6 @@ export const ICONS = {
   volume1: "M3.5 9.5h3L11 5.8v12.4l-4.5-3.7h-3zM14.5 9.6a3.4 3.4 0 0 1 0 4.8",
   volume2: "M3.5 9.5h3L11 5.8v12.4l-4.5-3.7h-3zM14.5 9.6a3.4 3.4 0 0 1 0 4.8M17 7.2a6.8 6.8 0 0 1 0 9.6",
   volume3: "M3.5 9.5h3L11 5.8v12.4l-4.5-3.7h-3zM14.5 9.6a3.4 3.4 0 0 1 0 4.8M17 7.2a6.8 6.8 0 0 1 0 9.6M19.4 4.8a10.2 10.2 0 0 1 0 14.4",
+  // chart.bar.xaxis: three bars over a baseline, for the spend card's button.
+  chart: "M4.6 4.5h1.9v13.4H4.6zM10.1 8.6h1.9v9.3h-1.9zM15.6 11.9h1.9v6h-1.9zM3.2 19.3h17.6v1.6H3.2z",
 } as const;

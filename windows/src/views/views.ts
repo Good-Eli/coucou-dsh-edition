@@ -23,6 +23,7 @@ import { Bridge } from "../core/bridge";
 import { buildRecap } from "./recap";
 import { buildWardrobe } from "./wardrobe";
 import { buildModel } from "./model";
+import { buildSpend, spendPillVisible } from "./spend";
 import { buildUpdate } from "./update";
 import { buildWhatsNew } from "./whatsnew";
 import { buildSpotifyCard, buildSpotifyPill, type SpotifyPillHost } from "./spotify";
@@ -78,6 +79,14 @@ export interface ViewHost {
   sync(): void;
   /** Called when the view becomes active, for views with a text field. */
   focus?(): void;
+  /**
+   * Called when the view appears on screen, for views that load something.
+   *
+   * Separate from `focus`: a text field wants the keyboard, a card wants its
+   * data, and loading in the background would spend the provider's requests on
+   * a card nobody opened.
+   */
+  activate?(): void;
   /** Called every frame while the view is on screen. True = needs another frame. */
   tick?(nowMs: number): boolean | void;
   /** Ctrl+O / Ctrl+E while the view is on screen (island/shortcuts.ts). */
@@ -145,6 +154,21 @@ export function buildHeader(actions: ViewActions): ViewHost {
     svg(ICONS.gearLine, 18, { stroke: 1.6 }),
   );
   const soundBtn = h("button", { title: tl("Mute"), onclick: () => actions.toggleSound() }, svg(ICONS.speakerLine, 18, { stroke: 1.6 }));
+  // The spend card: today, the week, the month. Sits with the house / chat /
+  // plus on the left, because it is about what DSH is doing, not about the app.
+  const spendBtn = h(
+    "button",
+    {
+      class: "tab spend-tab-btn",
+      title: tl("PlusVibeAPI spend"),
+      onclick: () => {
+        actions.blip();
+        if (State.view === "spend") actions.setView(State.defaultView());
+        else actions.setView("spend");
+      },
+    },
+    svg(ICONS.chart, 17),
+  );
   // Folds back to the compact island now, without waiting for the timer (the
   // Mac's ✕). A card waiting for an answer keeps the island open: no ✕ then.
   const closeBtn = h("button", { class: "close", title: tl("Close"), onclick: () => actions.collapse() }, svg(ICONS.xmark, 17));
@@ -162,7 +186,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const el = h(
     "div",
     { id: "header" },
-    h("div", { class: "tabs" }, tabHome, tabChat, tabDrop),
+    h("div", { class: "tabs" }, tabHome, tabChat, tabDrop, spendBtn),
     h("div", { class: "header-actions" }, planPills, gearBtn, soundBtn, closeBtn),
   );
   const headerActions = el.lastElementChild as HTMLElement;
@@ -174,6 +198,11 @@ export function buildHeader(actions: ViewActions): ViewHost {
       tabHome.classList.toggle("on", v === "overview" || v === "empty");
       tabChat.classList.toggle("on", v === "prompt");
       tabDrop.classList.toggle("on", v === "upload");
+      // The spend card is only about DSH, so its button only exists while DSH is
+      // live: a chart that opens onto "DSH is not connected" is worse than none.
+      const spendable = spendPillVisible();
+      spendBtn.style.display = spendable ? "" : "none";
+      spendBtn.classList.toggle("on", spendable && v === "spend");
       gearBtn.classList.toggle("on", v === "settings");
       clear(gearBtn);
       gearBtn.append(v === "settings" ? svg(ICONS.gearFill, 18) : svg(ICONS.gearLine, 18, { stroke: 1.6 }));
@@ -218,7 +247,11 @@ function buildOverview(actions: ViewActions): ViewHost {
     State.notify();
   });
   const who = h("div", { class: "who" });
-  const tickerBody = h("div", { class: "card-body" }, who, ticker.el);
+  // The card's "now" line: what the agent says it is doing. Hidden for every
+  // pill but DeepSeek Harness, whose card is the one that has a sentence to show.
+  const nowBlock = h("div", { class: "saying" });
+  nowBlock.style.display = "none";
+  const tickerBody = h("div", { class: "card-body" }, who, nowBlock, ticker.el);
   const leftBody = h("div", { class: "left-body" });
   const jump = h(
     "button",
@@ -387,6 +420,7 @@ function buildOverview(actions: ViewActions): ViewHost {
         }
         clear(who);
         who.className = task.id === DSH_PILL_ID ? "who stacked" : "who";
+        nowBlock.style.display = "none";
         if (task.id === DSH_PILL_ID) {
           // DeepSeek Harness: the card is about one dialog, so it names that
           // dialog and the model it runs instead of saying "Agent" and counting
@@ -399,6 +433,14 @@ function buildOverview(actions: ViewActions): ViewHost {
           const heading = sessionHeading(session);
           if (task.modelLine) who.append(h("span", { class: "tool", text: task.modelLine }));
           who.append(h("span", { class: "name", text: heading || task.name }));
+          // "What is it doing right now", in the agent's own words. This is the
+          // line that used to be a truncated shell command.
+          const now = nowLine(task);
+          if (now) {
+            nowBlock.style.display = "";
+            if (nowBlock.textContent !== now) nowBlock.textContent = now;
+            nowBlock.classList.toggle("quiet", !task.sayLine);
+          }
         } else {
           // The agent's name is already the pill's: the label says what kind of
           // pill it is, as on the Mac (PillDefinition.sessionSubtitle).
@@ -487,10 +529,36 @@ function buildOverview(actions: ViewActions): ViewHost {
 }
 
 /**
+ * The card's "now" line: what the session is doing, in words rather than a
+ * truncated command.
+ *
+ * The agent's own sentence wins — "Добавлю тест на утечку — иначе она вернётся"
+ * is what a person wants to read, while `cd 'C:\LocalAI\…'` is not. Without one
+ * (a turn that has not spoken yet) the state says what it can, and the last
+ * action fills the gap while it works. Nothing is invented for a finished turn:
+ * the ticker below already holds what it did.
+ */
+export function nowLine(task: AgentTask): string | null {
+  const said = task.sayLine?.trim();
+  if (said) return said;
+  switch (task.state) {
+    case "thinking":
+      return t("Thinking…");
+    case "working": {
+      const last = task.steps.at(-1)?.trim();
+      return last || t("Working…");
+    }
+    case "error":
+      return t("The turn failed");
+    default:
+      return null;
+  }
+}
+
+/**
  * IntegrationCardView.agentSessionActive: a workspace tool or an agent — or
  * any other tagged agent — with something going on.
- */
-export function hasSessionTicker(task: AgentTask): boolean {
+ */export function hasSessionTicker(task: AgentTask): boolean {
   // A pill made for an agent's session (Gemini CLI, Codex… not declared) only
   // exists while that session does: it keeps the ticker from the first event.
   if (task.source === "agent" && !task.isIntegration) return true;
@@ -955,6 +1023,7 @@ export function buildViews(
   map.set("recap", buildRecap(actions));
   map.set("wardrobe", buildWardrobe(actions));
   map.set("model", buildModel(actions));
+  map.set("spend", buildSpend(actions));
   map.set("update", buildUpdate());
   map.set("whatsNew", buildWhatsNew());
   // Not in the Windows v1: sending a file by email, window attach + web result.

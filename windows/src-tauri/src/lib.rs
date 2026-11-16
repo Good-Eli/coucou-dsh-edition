@@ -1261,6 +1261,7 @@ pub fn run() {
             dsh::client::dsh_approval,
             dsh::client::dsh_refresh_catalog,
             dsh::client::dsh_set_config,
+            dsh::client::dsh_spend_stats,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

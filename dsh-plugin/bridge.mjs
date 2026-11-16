@@ -39,7 +39,7 @@ export const PROTOCOL = 1;
  * this file in the entry's URL for exactly that reason; this number is what
  * makes the new code visible in `bridge.log` once it does load.
  */
-export const BUILD = 13;
+export const BUILD = 14;
 
 /**
  * Why this plugin does not decide its worth from the DSH version string.
@@ -401,6 +401,8 @@ export function apply(ctx, rawConfig) {
   const pending = new Map();
   /** Recent tool calls by callId, for arguments on the approval card. */
   const calls = new Map();
+  /** What each session last said out loud: sessionId → { text, at }. */
+  const said = new Map();
   /** True while an authenticated Coucou holds the pipe (at most one). */
   let connected = false;
 
@@ -627,8 +629,28 @@ export function apply(ctx, rawConfig) {
           record.since = Date.now();
           send({ t: 'session.state', sessionId: id, state: 'thinking', since: record.since });
         }
+        // A new turn says something new: the previous turn's last sentence is
+        // not "what is happening now" any more.
+        said.delete(id);
         send({ t: 'session.turn', sessionId: id, phase: 'start', ts: Date.now() });
         break;
+
+      // What the agent is saying, in its own words. The card's first line is
+      // this rather than a raw command: "Добавлю тест на утечку" tells a person
+      // what is going on, `cd 'C:\LocalAI\…'` does not.
+      case 'assistant/attempt': {
+        const line = lastSentence(attemptText(event.data?.stream));
+        if (!line) break;
+        const previous = said.get(id);
+        const at = Date.now();
+        // Streaming produces the same sentence over and over: send a change, or
+        // the same line once a second at most, never a frame per chunk.
+        if (previous && previous.text === line) break;
+        if (previous && at - previous.at < SAY_EVERY_MS) break;
+        said.set(id, { text: line, at });
+        send({ t: 'session.say', sessionId: id, text: line, ts: at });
+        break;
+      }
 
       case 'turn/end':
         if (record) {
@@ -841,6 +863,31 @@ export function apply(ctx, rawConfig) {
           send({ t: 'result', requestId: message.requestId, ok: true, value: state }),
         );
         break;
+      // The island's own statistics card: today, the last seven days, this
+      // month. Asked for when the card opens, cached for a few minutes, and
+      // answered from the provider's records rather than from a local tally.
+      case 'usage.stats': {
+        void spendStats()
+          .then((value) =>
+            send({
+              t: 'result',
+              requestId: message.requestId,
+              ok: value != null,
+              value: value ?? undefined,
+              error: value == null ? { code: 'unavailable', message: 'no spend figures are available' } : undefined,
+            }),
+          )
+          .catch((error) => {
+            log('warn', `usage: cannot read the spend statistics: ${clip(error?.message ?? error)}`);
+            send({
+              t: 'result',
+              requestId: message.requestId,
+              ok: false,
+              error: { code: 'unavailable', message: clip(error?.message ?? error) },
+            });
+          });
+        break;
+      }
       case 'ping':
         send({ t: 'pong', ts: Date.now() });
         break;
@@ -887,6 +934,34 @@ export function apply(ctx, rawConfig) {
   if (typeof usageTimer.unref === 'function') usageTimer.unref();
   ctx.effect(() => () => clearInterval(usageTimer));
   void refreshUsage(true);
+
+  /**
+   * Day / week / month for the island's statistics card, cached for a few
+   * minutes: a month of history is tens of requests, and pressing the button
+   * twice must not double them.
+   */
+  let statsAt = 0;
+  let statsValue = null;
+  let statsBusy = null;
+  const spendStats = async () => {
+    if (statsValue && Date.now() - statsAt < USAGE_STATS_TTL_MS) return statsValue;
+    if (statsBusy) return statsBusy;
+    const started = Date.now();
+    statsBusy = (async () => {
+      try {
+        const value = await plusvibeSpendStats(ctx, log);
+        if (value) {
+          statsValue = value;
+          statsAt = Date.now();
+          log('info', `usage: read the spend statistics in ${Date.now() - started} ms`);
+        }
+        return value;
+      } finally {
+        statsBusy = null;
+      }
+    })();
+    return statsBusy;
+  };
 
   // ── transport ──────────────────────────────────────────────────────────────
 
@@ -1039,6 +1114,14 @@ const USAGE_EVERY_MS = 5 * 60_000;
 const USAGE_MIN_GAP_MS = 60_000;
 /** The provider can take fifteen seconds to answer; two are no reason to give up. */
 const USAGE_REQUEST_MS = 30_000;
+/** Day / week / month on the island's own statistics card, asked for on open. */
+const USAGE_STATS_TTL_MS = 5 * 60_000;
+/** A month of a busy account is ~120 pages; this is a runaway guard, not a limit. */
+const USAGE_MAX_PAGES = 200;
+/** How many pages of the history are in flight at once. */
+const USAGE_CONCURRENCY = 6;
+/** The card's "what is happening now" line: at most one update a second. */
+const SAY_EVERY_MS = 1000;
 
 /** Local midnight, which is what "today" means to the person reading it. */
 function localDayStart(now = new Date()) {
@@ -1053,59 +1136,128 @@ function dayKey(date) {
 const finite = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
 
 /**
- * Today's spend, read from PlusVibeAPI's own records.
+ * The key PlusVibeAPI is called with, or null.
  *
- * The key is resolved through `ctx.credentials` on every call and never kept
- * here: a rotated key reaches the next refresh without a restart, and the value
- * never sits in this file's memory longer than the request. The numbers are the
- * provider's own — a key that cannot be resolved, or a provider that answers
- * nothing, leaves the island without a number rather than with a guess.
- *
- * The history endpoint takes at most 100 rows a page and a busy day has four
- * hundred, so the pages are fetched at once rather than one after another: the
- * provider answers in anywhere from three to fifteen seconds, and doing that
- * four times over would make the island's total arrive a minute late.
+ * Resolved through `ctx.credentials` on every call and never kept: a rotated key
+ * reaches the next refresh without a restart, and the value never sits in this
+ * file's memory longer than the request.
  */
-async function plusvibeUsage(ctx, log) {
+async function plusvibeKey(ctx, log) {
   const credentials = ctx.get?.('credentials');
   if (!credentials || typeof credentials.resolve !== 'function') return null;
-
-  let key;
   try {
-    key = (await credentials.resolve(PLUSVIBE_REF))?.value;
+    const key = (await credentials.resolve(PLUSVIBE_REF))?.value;
+    return typeof key === 'string' && key !== '' ? key : null;
   } catch (error) {
     log('debug', `usage: cannot resolve ${PLUSVIBE_REF}: ${clip(error?.message ?? error)}`);
     return null;
   }
-  if (typeof key !== 'string' || key === '') return null;
+}
 
-  const start = localDayStart();
-  const from = encodeURIComponent(start.toISOString());
+/**
+ * Every generation record since `from`, page by page.
+ *
+ * The endpoint takes at most 100 rows a page and returns the count on the first
+ * one, so the rest go out together in small batches: the provider answers in
+ * anywhere from three to fifteen seconds, and a page-at-a-time walk of a month
+ * would take minutes.
+ */
+async function generationRows(key, from, log) {
   const headers = { Authorization: `Bearer ${key}`, Accept: 'application/json' };
   const page = async (number) => {
-    const url = `${PLUSVIBE_BASE}/v1/generations?limit=100&page=${number}&dateFrom=${from}`;
+    const url = `${PLUSVIBE_BASE}/v1/generations?limit=100&page=${number}&dateFrom=${encodeURIComponent(from.toISOString())}`;
     const response = await fetch(url, { headers, signal: AbortSignal.timeout(USAGE_REQUEST_MS) });
     if (!response.ok) throw new Error(`the usage API answered ${response.status}`);
     return response.json();
   };
 
-  // The first page says how many there are, so the rest can go out together.
   const first = await page(1);
   const rows = Array.isArray(first?.data) ? [...first.data] : [];
-  const pages = Math.min(50, Math.ceil(finite(first?.total) / 100));
+  const wanted = Math.ceil(finite(first?.total) / 100);
+  const pages = Math.min(USAGE_MAX_PAGES, wanted);
   if (pages > 1) {
-    const rest = await Promise.all(Array.from({ length: pages - 1 }, (_, i) => page(i + 2)));
-    for (const body of rest) if (Array.isArray(body?.data)) rows.push(...body.data);
+    let next = 2;
+    const worker = async () => {
+      while (next <= pages) {
+        const number = next++;
+        const body = await page(number);
+        if (Array.isArray(body?.data)) rows.push(...body.data);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(USAGE_CONCURRENCY, pages - 1) }, worker));
   }
+  if (wanted > pages) log('warn', `usage: ${wanted} pages of history, read the first ${pages}`);
+  return { rows, truncated: wanted > pages };
+}
 
+/** One row's tokens and roubles, whichever spelling the endpoint used. */
+function rowSpend(row) {
+  return {
+    tokens: finite(row.promptTokens ?? row.prompt_tokens) + finite(row.completionTokens ?? row.completion_tokens),
+    rub: finite(row.priceRub ?? row.cost_rub),
+  };
+}
+
+function sumSpend(rows) {
   let tokens = 0;
   let rub = 0;
   for (const row of rows) {
-    // The two endpoints spell these differently; read either rather than guess.
-    tokens += finite(row.promptTokens ?? row.prompt_tokens) + finite(row.completionTokens ?? row.completion_tokens);
-    rub += finite(row.priceRub ?? row.cost_rub);
+    const spend = rowSpend(row);
+    tokens += spend.tokens;
+    rub += spend.rub;
   }
+  return { tokens, rub, requests: rows.length };
+}
+
+/**
+ * Today's spend, read from PlusVibeAPI's own records.
+ *
+ * The numbers are the provider's own — a key that cannot be resolved, or a
+ * provider that answers nothing, leaves the island without a number rather than
+ * with a guess.
+ */
+async function plusvibeUsage(ctx, log) {
+  const key = await plusvibeKey(ctx, log);
+  if (!key) return null;
+  const start = localDayStart();
+  const { rows } = await generationRows(key, start, log);
+  const { tokens, rub } = sumSpend(rows);
   return { tokens, rub, day: dayKey(start) };
+}
+
+/**
+ * Today, the last seven days and the calendar month, from one pass of history.
+ *
+ * One request serves all three rows: the month is the widest window, so its rows
+ * are read once and bucketed by the day they belong to. The month starts on the
+ * 1st, the way the provider's own `spendMonthRub` counts it; the week is the
+ * last seven days, which is what "за неделю" means to the person reading it.
+ */
+async function plusvibeSpendStats(ctx, log) {
+  const key = await plusvibeKey(ctx, log);
+  if (!key) return null;
+  const now = new Date();
+  const today = localDayStart(now);
+  const weekStart = new Date(today);
+  weekStart.setDate(weekStart.getDate() - 6);
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  const { rows, truncated } = await generationRows(key, monthStart, log);
+  const day = [];
+  const week = [];
+  for (const row of rows) {
+    const created = new Date(row.created_at ?? row.createdAt ?? 0);
+    if (Number.isNaN(created.getTime())) continue;
+    if (created >= today) day.push(row);
+    if (created >= weekStart) week.push(row);
+  }
+  return {
+    day: sumSpend(day),
+    week: sumSpend(week),
+    month: sumSpend(rows),
+    since: { day: dayKey(today), week: dayKey(weekStart), month: dayKey(monthStart) },
+    truncated,
+  };
 }
 
 /**
@@ -1113,11 +1265,49 @@ async function plusvibeUsage(ctx, log) {
  *
  * Only a name for Coucou's statistics — the arguments themselves are never
  * forwarded, and nothing is read from the path.
- */
-function touchedFile(args) {
+ */function touchedFile(args) {
   const raw = args?.file_path ?? args?.path;
   if (typeof raw !== 'string' || raw === '') return null;
   return clip(raw, 260);
+}
+
+/**
+ * The visible text of one attempt, as it stands.
+ *
+ * `assistant/attempt` carries the whole attempt's stream on every event: the
+ * `text-chunks` records hold what the model wrote for the user, and
+ * `reasoning-chunks` hold what it thought to itself. Only the first kind is
+ * read — the island shows what the agent says, never its private reasoning.
+ */
+function attemptText(stream) {
+  if (!Array.isArray(stream)) return '';
+  let text = '';
+  for (const record of stream) {
+    if (record?.type !== 'text-chunks' || !Array.isArray(record.texts)) continue;
+    text += record.texts.join('');
+    // Only the tail can be shown; keeping the whole answer wastes memory on a
+    // long one and the last sentence is all the card ever needs.
+    if (text.length > 4000) text = text.slice(-4000);
+  }
+  return text;
+}
+
+/**
+ * The last thing the agent said, short enough for a 322-pixel card.
+ *
+ * A sentence boundary is preferred so the line reads like a sentence rather than
+ * a cut-off stream; a sentence still being written is shown as it is, because
+ * that is exactly what "what is it doing right now" means.
+ */
+function lastSentence(text, max = 160) {
+  const clean = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!clean) return '';
+  const parts = clean.split(/(?<=[.!?…])\s+/).filter(Boolean);
+  let tail = parts[parts.length - 1] ?? clean;
+  // "Ok." on its own says nothing; keep the sentence before it too.
+  if (tail.length < 12 && parts.length > 1) tail = `${parts[parts.length - 2]} ${tail}`;
+  tail = tail.trim();
+  return tail.length > max ? `…${tail.slice(-max)}` : tail;
 }
 
 /**
@@ -1255,4 +1445,4 @@ function currentUserSid() {
   }
 }
 
-export default { name, apply, PROTOCOL, maskSecrets, clip };
+export default { name, apply, PROTOCOL, maskSecrets, clip, lastSentence, attemptText, BUILD };

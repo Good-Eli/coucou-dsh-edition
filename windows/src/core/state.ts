@@ -45,6 +45,15 @@ export interface AgentTask {
    * still running, and `finalLine` means the turn is over.
    */
   modelLine?: string | null;
+  /**
+   * What the agent said it is doing, in its own words.
+   *
+   * The card shows this as "now": "Добавлю тест на утечку — иначе она вернётся"
+   * tells a person what is going on, `cd 'C:\LocalAI\…'` does not. Empty when
+   * the host has not said anything this turn, and then the card falls back to
+   * the last action it took.
+   */
+  sayLine?: string | null;
 }
 
 /** What the compact island's middle shows (see Settings.compactIsland). */

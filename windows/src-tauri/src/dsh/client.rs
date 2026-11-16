@@ -12,7 +12,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::protocol::{self, ApprovalAsked, Catalog, Frame, Ready, Selection, Session, Usage};
+use super::protocol::{
+    self, ApprovalAsked, Catalog, Frame, Ready, Selection, Session, SpendStats, Usage,
+};
 use super::wire::{self, Conn};
 
 /// How often the client proves the host is still there.
@@ -67,6 +69,8 @@ impl Snapshot {
 pub(crate) enum RequestKind {
     Catalog,
     SetConfig { session_id: String },
+    /// Today / week / month spend for the island's statistics card.
+    SpendStats,
 }
 
 /// Shared with the Tauri commands.
@@ -146,18 +150,43 @@ fn answer_config(app: &AppHandle, result: ConfigResult) {
     let _ = app.emit("dsh-config", result);
 }
 
+/// The spend figures the island's statistics card asked for.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpendAnswer {
+    pub ok: bool,
+    pub stats: Option<SpendStats>,
+    /// Why there are no figures, when there are none. The card says so instead
+    /// of showing zeros nobody reported.
+    pub error: Option<String>,
+}
+
+fn answer_spend(app: &AppHandle, answer: SpendAnswer) {
+    let _ = app.emit("dsh-spend", answer);
+}
+
 /// Fails every request still waiting, because the connection that would have
 /// answered them is gone. Nothing is reported as applied.
 fn fail_outstanding(app: &AppHandle, reason: &str) {
     let Some(dsh) = app.try_state::<Dsh>() else { return };
-    let outstanding: Vec<String> = {
+    let outstanding: Vec<(String, RequestKind)> = {
         let mut guard = dsh.2.lock().unwrap_or_else(|e| e.into_inner());
-        let ids = guard.keys().cloned().collect();
-        guard.clear();
-        ids
+        let all = guard.drain().collect();
+        all
     };
-    for request_id in outstanding {
-        answer_config(app, ConfigResult { request_id, ok: false, error: Some(reason.to_string()), selection: None });
+    for (request_id, kind) in outstanding {
+        match kind {
+            RequestKind::SpendStats => answer_spend(
+                app,
+                SpendAnswer { ok: false, stats: None, error: Some(reason.to_string()) },
+            ),
+            // A model change or a catalog read: both are answered on the config
+            // channel, and neither is reported as applied.
+            _ => answer_config(
+                app,
+                ConfigResult { request_id, ok: false, error: Some(reason.to_string()), selection: None },
+            ),
+        }
     }
 }
 
@@ -366,13 +395,15 @@ fn absorb(app: &AppHandle, line: &str) -> Result<(), String> {
                 Some(existing) => {
                     // The plugin re-sends the session on every change (a title,
                     // a model, a state). Its copy knows nothing about the steps
-                    // this side collected from `session.step`, so the two are
+                    // or the last sentence this side collected, so the two are
                     // merged rather than one replacing the other.
                     let steps = std::mem::take(&mut existing.steps);
                     let step_seq = existing.step_seq;
+                    let say = existing.say.take();
                     *existing = session;
                     existing.steps = steps;
                     existing.step_seq = step_seq;
+                    existing.say = say;
                 }
                 None => s.sessions.push(session),
             }
@@ -402,8 +433,10 @@ fn absorb(app: &AppHandle, line: &str) -> Result<(), String> {
                         session.state = Some("thinking".into());
                         session.since = Some(now_ms());
                         // A new turn starts with a clean ticker: the previous
-                        // turn's steps belong to the previous turn.
+                        // turn's steps belong to the previous turn, and so does
+                        // the sentence it ended on.
                         session.steps.clear();
+                        session.say = None;
                     }
                 }
             });
@@ -432,6 +465,15 @@ fn absorb(app: &AppHandle, line: &str) -> Result<(), String> {
             }
             crate::recap::observe_dsh_step(app, &session_id, &cwd, tool.as_deref(), file.as_deref());
         }
+
+        // What the agent said out loud. The card shows this instead of the raw
+        // command: "Добавлю тест на утечку" is what a person wants to read.
+        Frame::SessionSay { session_id, text } => publish(app, |s| {
+            if let Some(session) = s.session_mut(&session_id) {
+                let line = text.trim();
+                session.say = if line.is_empty() { None } else { Some(line.chars().take(200).collect()) };
+            }
+        }),
 
         Frame::ApprovalAsked(asked) => {
             // The island's click is an Allow / Deny like any other, so the
@@ -491,6 +533,27 @@ fn absorb(app: &AppHandle, line: &str) -> Result<(), String> {
                             ConfigResult { request_id, ok: false, error: Some(message), selection: None },
                         );
                     }
+                }
+                Some(RequestKind::SpendStats) => {
+                    let stats = if ok {
+                        value.and_then(|value| serde_json::from_value::<SpendStats>(value).ok())
+                    } else {
+                        None
+                    };
+                    let message = error.and_then(|e| e.message.or(e.code));
+                    let found = stats.is_some();
+                    answer_spend(
+                        app,
+                        SpendAnswer {
+                            ok: found,
+                            stats,
+                            error: if found {
+                                None
+                            } else {
+                                Some(message.unwrap_or_else(|| "the host sent no figures".into()))
+                            },
+                        },
+                    );
                 }
                 None => {}
             }
@@ -632,6 +695,29 @@ pub fn dsh_set_config(app: AppHandle, session_id: String, config_id: String, val
         return Err("DSH is not connected".into());
     }
     Ok(request_id)
+}
+
+/// Asks the plugin for today's, the week's and the month's spend.
+///
+/// The answer arrives as a `dsh-spend` event rather than as this command's
+/// return value: the provider can take a while, and the card must stay usable
+/// while it waits.
+#[tauri::command]
+pub fn dsh_spend_stats(app: AppHandle) -> Result<(), String> {
+    let request_id = format!("spend-{}", now_ms());
+    if let Some(dsh) = app.try_state::<Dsh>() {
+        dsh.2
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(request_id.clone(), RequestKind::SpendStats);
+    }
+    if !queue(&app, protocol::usage_stats(&request_id)) {
+        if let Some(dsh) = app.try_state::<Dsh>() {
+            dsh.2.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id);
+        }
+        return Err("DSH is not connected".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

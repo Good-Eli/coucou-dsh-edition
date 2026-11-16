@@ -182,8 +182,51 @@ test('a provider that refuses leaves the island without a number, not with a zer
   ctx.disposeAll();
 });
 
-test('a handover leaves no timer and no listener behind', async () => {
-  // Every reload used to leave the old copy's five-minute timer running: the
+test('the spend statistics bucket one month of history into day, week and month', async () => {
+  // One pass over the month serves all three rows: the widest window is read
+  // once and each record is put in the windows it belongs to.
+  const now = new Date();
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const at = (daysAgo) => {
+    const d = new Date(midnight);
+    d.setDate(d.getDate() - daysAgo);
+    d.setHours(12, 0, 0, 0);
+    return d.toISOString();
+  };
+  const rows = [
+    { created_at: at(0), prompt_tokens: 100, completion_tokens: 10, cost_rub: 1 }, // today
+    { created_at: at(0), prompt_tokens: 100, completion_tokens: 10, cost_rub: 1 }, // today
+    { created_at: at(3), prompt_tokens: 200, completion_tokens: 20, cost_rub: 2 }, // this week
+    { created_at: at(40), prompt_tokens: 400, completion_tokens: 40, cost_rub: 4 }, // older than a month
+  ];
+  // The stub answers the month's window only, as the bridge asks for it.
+  const inMonth = rows.filter((r) => new Date(r.created_at) >= new Date(now.getFullYear(), now.getMonth(), 1));
+  const { calls } = stubUsage([inMonth]);
+
+  const ctx = fakeCtx();
+  const bridge = startBridge(ctx);
+  handshake(bridge);
+  // The bridge reads today's total on connect; wait for that before counting.
+  await waitFor(bridge, 'usage');
+  const before = calls.length;
+  bridge.channel.inject(`${JSON.stringify({ t: 'usage.stats', requestId: 'spend-1' })}\n`);
+  const answer = await waitFor(bridge, 'result');
+
+  assert.equal(calls.length - before, 1, 'one request serves all three periods');
+  assert.ok(answer?.ok, 'the figures arrived');
+  const value = answer.value;
+  assert.equal(value.day.requests, 2, 'today has the two records from today');
+  assert.equal(value.day.rub, 2);
+  assert.equal(value.week.requests, 3, 'the week has today and three days ago');
+  assert.equal(value.month.requests, 3, 'the month is everything the provider returned');
+  assert.equal(value.month.rub, 4);
+  // The windows are named, so the card can say what it is showing.
+  assert.equal(value.since.day, localDay());
+  assert.equal(value.since.month.length, 10, 'a YYYY-MM-DD month start');
+  ctx.disposeAll();
+});
+
+test('a handover leaves no timer and no listener behind', async () => {  // Every reload used to leave the old copy's five-minute timer running: the
   // log filled with retries from bridges nobody was talking to, and the island's
   // answerer count grew by one per handover ("38 other answerer(s)").
   const source = readFileSync(new URL('../bridge.mjs', import.meta.url), 'utf8');

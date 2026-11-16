@@ -21,6 +21,7 @@ import {
   modelLabel,
   sessionFor,
   type DshSnapshot,
+  type SpendStats,
 } from "../core/dsh";
 import { pillDefinition } from "../core/pills";
 import { Sound } from "../core/sound";
@@ -195,6 +196,67 @@ export function registerDshHandlers(island: Island) {
   host = island;
   void onEvent<DshSnapshot>("dsh", (snapshot) => applyDsh(snapshot));
   void onEvent<ConfigResult>("dsh-config", (result) => settleConfig(result));
+  void onEvent<SpendAnswer>("dsh-spend", (answer) => settleSpend(answer));
+}
+
+/** What Rust answered when the island asked for the spend statistics. */
+export interface SpendAnswer {
+  ok: boolean;
+  stats?: SpendStats | null;
+  error?: string | null;
+}
+
+/**
+ * The spend card's own state: the figures, whether they are on their way, and
+ * why there are none.
+ *
+ * A card that shows zeros while it waits would be a lie about a real account, so
+ * "loading" and "unavailable" are states of their own.
+ */
+export const Spend = {
+  stats: null as SpendStats | null,
+  loading: false,
+  error: null as string | null,
+  /** Which period the card is showing: the user picks it, and it is remembered. */
+  period: "day" as "day" | "week" | "month",
+};
+
+/** How long to wait for the figures before saying so instead of spinning. */
+const SPEND_TIMEOUT_MS = 90_000;
+let spendTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Asks Rust for the figures, unless they are already here and fresh. */
+export function refreshSpend(force = false) {
+  if (Spend.loading) return;
+  if (!force && Spend.stats) return;
+  Spend.loading = true;
+  Spend.error = null;
+  if (spendTimer) clearTimeout(spendTimer);
+  spendTimer = setTimeout(() => {
+    if (!Spend.loading) return;
+    Spend.loading = false;
+    Spend.error = "DSH did not answer in time";
+    State.notify();
+  }, SPEND_TIMEOUT_MS);
+  void Bridge.dshSpendStats().catch((error: unknown) => {
+    settleSpend({ ok: false, error: String(error) });
+  });
+  State.notify();
+}
+
+function settleSpend(answer: SpendAnswer) {
+  if (spendTimer) {
+    clearTimeout(spendTimer);
+    spendTimer = null;
+  }
+  Spend.loading = false;
+  if (answer.ok && answer.stats) {
+    Spend.stats = answer.stats;
+    Spend.error = null;
+  } else {
+    Spend.error = answer.error ?? "no figures are available";
+  }
+  State.notify();
 }
 
 /** A report from Rust: the whole truth about DSH right now. */
@@ -304,6 +366,7 @@ export function syncTask() {
       kept.stepSeq = 0;
       kept.finalLine = null;
       kept.modelLine = null;
+      kept.sayLine = null;
       kept.pillBadge = null;
       kept.sessionId = null;
       return;
@@ -324,6 +387,9 @@ export function syncTask() {
   // agent's final message; a running one keeps the shimmer.
   const over = state === "finished" || state === "error";
   const finalLine = over ? (steps.at(-1) ?? label) : null;
+  // What the agent says it is doing, in its own words. This is the card's
+  // "now" line: a sentence beats `cd 'C:\LocalAI\…'` every time.
+  const said = session?.say?.trim() || null;
   const badge = snapshot && snapshot.approvalsEnabled && snapshot.pending.length > 0 ? "approval" : null;
 
   if (index < 0) {
@@ -341,6 +407,7 @@ export function syncTask() {
       sessionId: session?.id ?? null,
       finalLine,
       modelLine: label,
+      sayLine: said,
       pillBadge: badge,
     });
     return;
@@ -352,6 +419,7 @@ export function syncTask() {
   task.sessionId = session?.id ?? null;
   task.finalLine = finalLine;
   task.modelLine = label;
+  task.sayLine = said;
   task.pillBadge = badge;
   // Replaced, never appended: the host re-sends the whole turn's steps, so
   // appending would grow the list on every frame.

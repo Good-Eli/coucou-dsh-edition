@@ -338,6 +338,13 @@ export const Bridge = {
   /** Asks the host for a fresh catalog. */
   dshRefreshCatalog: () => call<void>("dsh_refresh_catalog"),
   /**
+   * Asks for today's, the week's and the month's spend.
+   *
+   * The figures come back as a `dsh-spend` event, not as this call's value: the
+   * provider can take a while, and the card stays usable while it waits.
+   */
+  dshSpendStats: () => call<void>("dsh_spend_stats"),
+  /**
    * Brings DeepSeek Harness's window forward. False when it has no window —
    * DSH not running, or started in a way that leaves nothing to raise.
    */

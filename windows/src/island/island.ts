@@ -642,6 +642,7 @@ export class Island {
       this.fsm.forceHome();
       State.view = view;
       this.animateGeometry(false);
+      this.views.get(view)?.activate?.();
       State.notify();
       return;
     }
@@ -649,6 +650,10 @@ export class Island {
     State.view = view;
     State.lastActivity = performance.now();
     this.animateGeometry(!grew);
+    // A view that has to load something asks for it when it appears, never in
+    // the background: the spend card would otherwise read a month of the
+    // provider's history for a card nobody opened.
+    this.views.get(view)?.activate?.();
     State.notify();
   }
 

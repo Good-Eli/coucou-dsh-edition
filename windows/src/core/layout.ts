@@ -26,7 +26,8 @@ export type IslandViewName =
   | "wardrobe"
   | "update"
   | "whatsNew"
-  | "model";
+  | "model"
+  | "spend";
 
 export type BotStateName =
   | "idle"
@@ -104,6 +105,9 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   // Model picker: a list of models and a row of effort chips. Taller than a
   // card, and Mochi stays out of the way.
   model: { height: 300, botX: 62, botY: null, botDiameter: 0, agentMode: "none" },
+  // The spend card: three periods, one row of figures, and the source line.
+  // No Mochi — the numbers are the point.
+  spend: { height: 224, botX: 62, botY: null, botDiameter: 0, agentMode: "none" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually

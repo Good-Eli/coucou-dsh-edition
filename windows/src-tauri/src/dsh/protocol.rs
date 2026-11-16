@@ -154,6 +154,11 @@ pub struct Session {
     /// is what keeps the ticker moving once the list is full.
     #[serde(default)]
     pub step_seq: u32,
+    /// The last thing the agent said out loud, in its own words ("Добавлю тест
+    /// на утечку — иначе она вернётся"). This is what the card shows as "what is
+    /// happening now": a raw command tells a person nothing.
+    #[serde(default)]
+    pub say: Option<String>,
 }
 
 /// The first frame after a successful handshake.
@@ -272,6 +277,15 @@ pub enum Frame {
         file: Option<String>,
     },
 
+    /// What the agent said out loud, last sentence only: the card's "now" line.
+    #[serde(rename = "session.say")]
+    SessionSay {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(default)]
+        text: String,
+    },
+
     #[serde(rename = "approval.asked")]
     ApprovalAsked(ApprovalAsked),
 
@@ -338,6 +352,46 @@ pub fn ping() -> String {
 
 pub fn catalog_get(request_id: &str) -> String {
     serde_json::json!({ "t": "catalog.get", "requestId": request_id }).to_string()
+}
+
+/// Asks the plugin for today's, the week's and the month's spend.
+///
+/// One request for all three: the plugin reads the widest window once and
+/// buckets it, so opening the card is a single round trip.
+pub fn usage_stats(request_id: &str) -> String {
+    serde_json::json!({ "t": "usage.stats", "requestId": request_id }).to_string()
+}
+
+/// One period's spend, as the provider counted it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SpendTotals {
+    pub tokens: i64,
+    pub rub: f64,
+    pub requests: i64,
+}
+
+/// What the island's statistics card shows: today, the last seven days and the
+/// calendar month, plus the first day each window covers.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SpendStats {
+    pub day: SpendTotals,
+    pub week: SpendTotals,
+    pub month: SpendTotals,
+    #[serde(default)]
+    pub since: SpendSince,
+    /// True when the month had more history than the plugin read: the figures
+    /// are then the oldest part of the month, not all of it.
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SpendSince {
+    pub day: String,
+    pub week: String,
+    pub month: String,
 }
 
 /// Changes the model or the effort of one session, never a global default.
@@ -469,6 +523,35 @@ mod tests {
             panic!("expected ready")
         };
         assert!(ready.approvals.is_enabled());
+    }
+
+    #[test]
+    fn the_agents_own_words_arrive_as_their_own_frame() {
+        let line = r#"{"t":"session.say","sessionId":"s1","text":"Добавлю тест на утечку"}"#;
+        let Frame::SessionSay { session_id, text } = serde_json::from_str::<Frame>(line).unwrap() else {
+            panic!("expected session.say")
+        };
+        assert_eq!(session_id, "s1");
+        assert_eq!(text, "Добавлю тест на утечку");
+    }
+
+    #[test]
+    fn the_spend_statistics_arrive_as_one_answer() {
+        let line = r#"{"t":"result","requestId":"spend-1","ok":true,"value":{
+            "day":{"tokens":1000,"rub":1.5,"requests":3},
+            "week":{"tokens":9000,"rub":9.5,"requests":30},
+            "month":{"tokens":90000,"rub":95.5,"requests":300},
+            "since":{"day":"2026-11-16","week":"2026-11-10","month":"2026-11-01"},
+            "truncated":false}}"#;
+        let Frame::Result { value, .. } = serde_json::from_str::<Frame>(line).unwrap() else {
+            panic!("expected result")
+        };
+        let stats: SpendStats = serde_json::from_value(value.unwrap()).unwrap();
+        assert_eq!(stats.day.tokens, 1000);
+        assert_eq!(stats.week.requests, 30);
+        assert_eq!(stats.month.rub, 95.5);
+        assert_eq!(stats.since.month, "2026-11-01");
+        assert!(!stats.truncated);
     }
 
     #[test]

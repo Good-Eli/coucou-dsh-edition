@@ -49,6 +49,14 @@ export interface DshSession {
   steps?: string[];
   /** How many steps the turn has run in total; `steps` is capped. */
   stepSeq?: number;
+  /**
+   * The last thing the agent said out loud, in its own words.
+   *
+   * The card shows this as "what is happening now": a sentence like "Добавлю
+   * тест на утечку — иначе она вернётся" tells a person what is going on, while
+   * a raw `cd 'C:\LocalAI\…'` command does not.
+   */
+  say?: string | null;
 }
 
 /** Today's PlusVibeAPI spend, as the bridge read it from the provider. */
@@ -59,6 +67,35 @@ export interface DshUsage {
   rub: number;
   /** The local day (`YYYY-MM-DD`) the figures belong to. */
   day?: string | null;
+}
+
+/** One period of spend, as the provider counted it. */
+export interface SpendTotals {
+  tokens: number;
+  rub: number;
+  requests: number;
+}
+
+/** The first day each window covers, so the card can say what it is showing. */
+export interface SpendSince {
+  day: string;
+  week: string;
+  month: string;
+}
+
+/**
+ * Today, the week and the month, for the island's own statistics card.
+ *
+ * Read from the provider's records, never tallied here: the account is billed by
+ * PlusVibeAPI, so its numbers are the only true ones.
+ */
+export interface SpendStats {
+  day: SpendTotals;
+  week: SpendTotals;
+  month: SpendTotals;
+  since: SpendSince;
+  /** The month had more history than the bridge read: the figures are partial. */
+  truncated?: boolean;
 }
 
 /** A question waiting for a click. */
