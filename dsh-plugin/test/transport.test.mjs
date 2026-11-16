@@ -43,6 +43,15 @@ test('an I/O failure is a disconnect, never the end of the bridge', () => {
   assert.match(host, /treating as a disconnect/, 'an unexpected code is still only a disconnect');
 });
 
+test('nothing is sent before `ready`, or the handshake reads as refused', () => {
+  // Coucou treats any frame other than `ready` before the handshake as a wrong
+  // token. A cached spend total sent early would look like a refused client.
+  const handshake = bridge.slice(bridge.indexOf("t: 'ready'"));
+  const usage = handshake.indexOf("t: 'usage'");
+  assert.ok(usage > 0, 'the total is sent after ready');
+  assert.ok(usage < handshake.indexOf("log('info', 'pipe: Coucou connected')"), 'and before the client is told it is connected');
+});
+
 test('a host that dies is brought back, with a backoff', () => {
   assert.match(supervisor, /#scheduleRestart\(\)/, 'there is a restart path at all');
   assert.match(supervisor, /restarting the host in/, 'the restart is logged');

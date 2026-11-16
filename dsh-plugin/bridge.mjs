@@ -773,12 +773,12 @@ export function apply(ctx, rawConfig) {
             catalog: catalogState,
             sessions: [...sessions.values()],
           });
+          // Only now: Coucou reads anything before `ready` as a refused
+          // handshake, so a cached total sent early would look like a bad token.
+          if (usage) send({ t: 'usage', ...usage });
+          void refreshUsage();
         });
         log('info', 'pipe: Coucou connected');
-        // The spend is account-wide and cheap to keep warm, so the island gets
-        // it the moment it asks rather than after its own five minutes.
-        if (usage) send({ t: 'usage', ...usage });
-        void refreshUsage();
         return;
       }
       handle(message);

@@ -82,6 +82,15 @@ export class Island {
   private closedEl!: HTMLElement;
   private closedDot!: HTMLElement;
   private closedText!: HTMLElement;
+  /**
+   * Off-screen copy of the closed island's text, for measuring it.
+   *
+   * The real element lives in a window sized to the very width being computed,
+   * and its `overflow: hidden` clamps `scrollWidth` to that width: measuring it
+   * in place returned the old width, so the island could never grow to fit a
+   * longer line and cut it off instead ("84,1M / 24,61…").
+   */
+  private closedMeasure!: HTMLElement;
   private closedKey = "";
   /** Width of the closed island for what it shows now. */
   private closedW = 120;
@@ -372,6 +381,9 @@ export class Island {
     this.closedDot = h("span", { class: "dot" });
     this.closedText = h("span", { class: "text" });
     this.closedEl = h("div", { id: "island-closed" }, this.closedDot, this.closedText);
+    // Same font and padding as #island-closed, out of the layout: the only way
+    // to learn how wide a line is before the window has that width.
+    this.closedMeasure = h("div", { id: "closed-measure" });
     this.botGlow = h("div", { id: "bot-glow" });
     this.botCanvas = h("canvas", { id: "bot-canvas" });
     this.greetingCanvas = h("canvas", { id: "greeting-canvas" });
@@ -433,6 +445,7 @@ export class Island {
       this.compactPlan,
       this.clockEl,
       this.closedEl,
+      this.closedMeasure,
       this.countdown,
     );
 
@@ -1095,9 +1108,13 @@ export class Island {
     this.closedEl.classList.toggle("note", content?.note === true);
     this.closedDot.style.display = content?.dot ? "" : "none";
     if (content?.dot) this.closedDot.style.background = content.dot;
-    // Measured as drawn: the font and the language decide the width.
+    // Measured as drawn: the font and the language decide the width. Measured
+    // off-screen, because the real element's own width is what is being
+    // computed — reading it in place returns the old width and cuts the line.
+    if (content) this.closedMeasure.textContent = content.text;
     const extras = (content?.dot ? 12 : 0) + (content?.note ? 16 : 0);
-    const w = closedWidth(content ? this.closedText.scrollWidth : 0, extras);
+    const textWidth = content ? this.closedMeasure.scrollWidth : 0;
+    const w = closedWidth(textWidth, extras);
     if (w !== this.closedW) {
       this.closedW = w;
       if (State.mode === "hidden") {

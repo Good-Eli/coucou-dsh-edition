@@ -264,6 +264,29 @@ body {
   min-width: 0;
 }
 
+/*
+ * Off-screen twin of the closed island's text, used only to measure it.
+ *
+ * The island's window is sized to the line, so the line's own element cannot
+ * report how wide it wants to be: `overflow: hidden` clamps `scrollWidth` to
+ * the current width. This copy shares the font and the padding and takes no
+ * space in the layout, so the width can be measured before it is applied.
+ */
+#closed-measure {
+  position: absolute;
+  left: -10000px;
+  top: 0;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  /* No padding: closedWidth() adds CLOSED_PAD a side itself, and a padding here
+     would be counted twice (scrollWidth includes an element's own padding). */
+}
+
 #island-closed .dot {
   flex: 0 0 auto;
   width: 6px;
