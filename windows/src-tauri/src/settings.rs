@@ -530,6 +530,7 @@ mod tests {
   "phoneRelay": true,
   "phoneRelayUrl": "wss://relay.example.workers.dev",
   "showClock": true,
+  "compactIsland": "clock",
   "closedIsland": "music"
 }"##;
 
