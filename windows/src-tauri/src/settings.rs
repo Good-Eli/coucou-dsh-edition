@@ -110,6 +110,10 @@ pub struct Settings {
     pub phone_relay_url: String,
     /// The date and time in the middle of the compact island. Off by default.
     pub show_clock: bool,
+    /// What that middle holds: "clock", "usage" (today's PlusVibeAPI spend) or
+    /// "none". Empty in a file written before this existed, which is read
+    /// through `show_clock` — see compactIslandMode in src/core/state.ts.
+    pub compact_island: String,
     /// What the closed island shows at the top of the screen, where the Mac
     /// has its notch: "mochi" (the Mac's island on a screen without a notch),
     /// "time", "datetime", "claude" (the plan's usage), "music" (what plays),
@@ -222,6 +226,7 @@ impl Default for Settings {
             phone_relay: false,
             phone_relay_url: String::new(),
             show_clock: false,
+            compact_island: String::new(),
             closed_island: "mochi".into(),
         }
     }
@@ -1048,6 +1053,7 @@ mod tests {
                 "phoneRelay",
                 "phoneRelayUrl",
                 "showClock",
+                "compactIsland",
                 "closedIsland",
             ]
         );

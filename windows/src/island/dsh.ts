@@ -20,7 +20,6 @@ import {
   isLive,
   modelLabel,
   sessionFor,
-  sessionLine,
   type DshSnapshot,
 } from "../core/dsh";
 import { pillDefinition } from "../core/pills";
@@ -302,7 +301,9 @@ export function syncTask() {
       kept.state = "idle";
       kept.steps = [];
       kept.stepIndex = 0;
+      kept.stepSeq = 0;
       kept.finalLine = null;
+      kept.modelLine = null;
       kept.pillBadge = null;
       kept.sessionId = null;
       return;
@@ -313,8 +314,17 @@ export function syncTask() {
 
   const session = activeSession(snapshot);
   const label = modelLabel(session, snapshot?.catalog);
-  const line = sessionLine(session);
   const state = islandState(session);
+  // The steps are the host's own: what the agent actually did. The session's
+  // title used to be appended here as a "step" on every event, which is why the
+  // card showed the same line twice and counted 12 of them.
+  const steps = session?.steps ?? [];
+  const stepSeq = session?.stepSeq ?? steps.length;
+  // A finished turn holds its last action still, the way a hook pill holds the
+  // agent's final message; a running one keeps the shimmer.
+  const over = state === "finished" || state === "error";
+  const finalLine = over ? (steps.at(-1) ?? label) : null;
+  const badge = snapshot && snapshot.approvalsEnabled && snapshot.pending.length > 0 ? "approval" : null;
 
   if (index < 0) {
     State.tasks.push({
@@ -322,15 +332,16 @@ export function syncTask() {
       name: definition?.name ?? "DeepSeek Harness",
       color: definition?.color ?? "#4C8DFF",
       state,
-      stepIndex: 0,
-      steps: line ? [line] : [],
+      stepIndex: Math.max(0, steps.length - 1),
+      steps: [...steps],
+      stepSeq,
       source: "agent",
       isIntegration: false,
       sessionCwd: session?.cwd ?? null,
       sessionId: session?.id ?? null,
-      // The model line is the one thing worth showing next to the pill.
-      finalLine: label,
-      pillBadge: snapshot && snapshot.approvalsEnabled && snapshot.pending.length > 0 ? "approval" : null,
+      finalLine,
+      modelLine: label,
+      pillBadge: badge,
     });
     return;
   }
@@ -339,12 +350,14 @@ export function syncTask() {
   task.state = state;
   task.sessionCwd = session?.cwd ?? null;
   task.sessionId = session?.id ?? null;
-  task.finalLine = label;
-  task.pillBadge = snapshot && snapshot.approvalsEnabled && snapshot.pending.length > 0 ? "approval" : null;
-  if (line) {
-    task.steps = task.steps.length ? [...task.steps.slice(-20), line] : [line];
-    task.stepIndex = task.steps.length - 1;
-  }
+  task.finalLine = finalLine;
+  task.modelLine = label;
+  task.pillBadge = badge;
+  // Replaced, never appended: the host re-sends the whole turn's steps, so
+  // appending would grow the list on every frame.
+  task.steps = [...steps];
+  task.stepIndex = Math.max(0, steps.length - 1);
+  task.stepSeq = stepSeq;
 }
 
 /**

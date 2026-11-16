@@ -529,12 +529,42 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* The card is narrow: the name must give way before the model does. */
+  min-width: 0;
+  flex: 0 1 auto;
 }
 
 .who .tool {
   font: 400 11px var(--font);
   color: var(--dim-2);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 0 auto;
+}
+
+/*
+ * DeepSeek Harness's card: two lines instead of one crowded row.
+ *
+ * The name of the dialog is the longest thing on the card and the model is the
+ * most useful thing next to it, so they get a line each instead of fighting for
+ * 178 px: the name takes the whole width and truncates, the model sits under it.
+ */
+.who.stacked {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding-top: 2px;
+}
+.who.stacked .name {
+  max-width: 100%;
+  align-self: stretch;
+}
+.who.stacked .tool {
+  font-size: 10.5px;
+  color: var(--dim-2);
+  max-width: 100%;
+  align-self: stretch;
 }
 
 .who .count {

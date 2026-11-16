@@ -10,7 +10,7 @@ import {
   ISLAND_SHORTCUTS, SHORTCUTS, SHORTCUT_TEXT, activeKeys, displayKeys, duplicates, effective,
   recordPress, type Binding,
 } from "../core/shortcuts";
-import { DEFAULT_SETTINGS, type Settings } from "../core/state";
+import { DEFAULT_SETTINGS, compactIslandMode, type Settings } from "../core/state";
 import { closedIsland } from "../core/closed";
 import type { UpdateStatus } from "../core/update";
 import { SOUND_NAMES } from "../core/sound";
@@ -1023,6 +1023,24 @@ function generalSection(): HTMLElement {
     onclick: () => void Bridge.reloadSounds().then(() => window.setTimeout(countCustom, 300)),
   });
 
+  // What the middle of the compact island holds. It replaces the old "Show
+  // clock" switch: the same place can now carry today's spend instead, and
+  // "nothing" is still a choice. `showClock` is only read to migrate a file
+  // written before this select existed.
+  const compact = h("select", {}) as HTMLSelectElement;
+  compact.append(
+    h("option", { value: "clock", text: t("The time") }),
+    h("option", { value: "usage", text: t("PlusVibeAPI spend") }),
+    h("option", { value: "none", text: t("Nothing") }),
+  );
+  compact.value = compactIslandMode(settings);
+  compact.addEventListener("change", () => {
+    settings.compactIsland = compact.value;
+    // Kept in step for an older build that still reads only the switch.
+    settings.showClock = compact.value === "clock";
+    void save();
+  });
+
   const autoClose = h("input", {
     type: "number", min: "5", max: "120", step: "1",
     value: String(Math.round(settings.autoCloseInterval)),
@@ -1041,6 +1059,7 @@ function generalSection(): HTMLElement {
     h("option", { value: "time", text: t("The time") }),
     h("option", { value: "datetime", text: t("The date and the time") }),
     h("option", { value: "claude", text: t("Claude usage") }),
+    h("option", { value: "usage", text: t("PlusVibeAPI spend") }),
     h("option", { value: "music", text: t("What's playing") }),
     h("option", { value: "empty", text: t("Nothing, just the island") }),
     h("option", { value: "hidden", text: t("Hide the island") }),
@@ -1099,10 +1118,10 @@ function generalSection(): HTMLElement {
     ),
     h("div", { class: "hint", text: t("When a pill other than the one shown finishes or hits an error, the notch shows it for a moment, then the pill you had comes back.") }),
     h("div", { class: "row" },
-      h("label", { text: t("Show clock in the island") }),
-      toggle(settings.showClock, (v) => { settings.showClock = v; void save(); }),
+      h("label", { text: t("The middle of the compact island shows") }),
+      compact,
     ),
-    h("div", { class: "hint", text: t("The date and the time in the middle of the island when it is compact.") }),
+    h("div", { class: "hint", text: t("The time, or today's tokens and roubles as PlusVibeAPI reports them.") }),
     h("div", { class: "row" },
       h("label", { text: t("Closed island shows") }),
       closed,

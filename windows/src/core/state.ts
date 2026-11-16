@@ -39,6 +39,31 @@ export interface AgentTask {
   sessionId?: string | null;
   /** Claude's final message after Stop, one line; cleared when a new turn starts. */
   finalLine?: string | null;
+  /**
+   * The model a session is running, as the host reported it ("V4-Flash · HIGH").
+   * Its own field rather than `finalLine`: the card shows it while the turn is
+   * still running, and `finalLine` means the turn is over.
+   */
+  modelLine?: string | null;
+}
+
+/** What the compact island's middle shows (see Settings.compactIsland). */
+export type CompactIsland = "clock" | "usage" | "none";
+
+export const COMPACT_ISLANDS: readonly CompactIsland[] = ["clock", "usage", "none"];
+
+/**
+ * The compact island's middle, with the old `showClock` switch read as a value.
+ *
+ * A settings file written before `compactIsland` existed has `""` here and a
+ * boolean there: `true` was the clock, `false` was nothing. Reading it this way
+ * means nobody's island changes shape on the update, and the settings page can
+ * write the new field from then on.
+ */
+export function compactIslandMode(settings: { compactIsland?: string; showClock?: boolean }): CompactIsland {
+  const picked = settings.compactIsland;
+  if (COMPACT_ISLANDS.includes(picked as CompactIsland)) return picked as CompactIsland;
+  return settings.showClock ? "clock" : "none";
 }
 
 export interface ApprovalInfo {
@@ -124,7 +149,16 @@ export interface Settings {
   openOnHover: boolean;
   /** Open the island for a moment when any pill finishes or hits an error. */
   alertsFromAllPills: boolean;
-  /** Date and time in the middle of the compact island. */
+  /**
+   * What the middle of the compact island shows: "clock" (the date and the
+   * time), "usage" (today's PlusVibeAPI spend) or "none".
+   *
+   * It replaces the old `showClock` switch, which could only say whether the
+   * clock was there. An empty value — a file written by an older build — is
+   * read through `showClock` so nobody's island changes on its own.
+   */
+  compactIsland: string;
+  /** @deprecated Read only to migrate a settings file written before `compactIsland`. */
   showClock: boolean;
   /** What the closed island shows at the top of the screen (see core/closed.ts). */
   closedIsland: string;
@@ -208,6 +242,7 @@ export const DEFAULT_SETTINGS: Settings = {
   openOnHover: false,
   alertsFromAllPills: false,
   showClock: false,
+  compactIsland: "",
   closedIsland: "mochi",
   absenceInterval: 180,
   activeIntegrations: [

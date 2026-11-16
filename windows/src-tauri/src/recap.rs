@@ -202,11 +202,11 @@ impl Recap {
 
         match event {
             "UserPromptSubmit" => {
-                self.draft(&key, &agent, payload, now);
+                self.draft(&key, &agent, &text(payload, "cwd"), now);
             }
             "PreToolUse" => {
                 let tool = text(payload, "tool_name");
-                let draft = self.draft(&key, &agent, payload, now);
+                let draft = self.draft(&key, &agent, &text(payload, "cwd"), now);
                 if COMMAND_TOOLS.contains(&tool) {
                     draft.commands_run = draft.commands_run.saturating_add(1);
                 }
@@ -217,8 +217,8 @@ impl Recap {
             "PostToolUse" => {
                 let tool = text(payload, "tool_name");
                 let input = payload.get("tool_input").unwrap_or(&Value::Null);
-                let change = file_change(tool, input);
-                let draft = self.draft(&key, &agent, payload, now);
+                let change = file_change(&tool, input);
+                let draft = self.draft(&key, &agent, &text(payload, "cwd"), now);
                 if let Some((path, added, removed)) = change {
                     draft.paths.insert(path);
                     draft.lines_added = draft.lines_added.saturating_add(added);
@@ -239,13 +239,13 @@ impl Recap {
     }
 
     /// The draft for `key`, created on the first event of a turn.
-    fn draft(&mut self, key: &str, agent: &str, payload: &Value, now: i64) -> &mut Draft {
+    fn draft(&mut self, key: &str, agent: &str, cwd: &str, now: i64) -> &mut Draft {
         if !self.drafts.contains_key(key) && self.drafts.len() >= MAX_DRAFTS {
             self.close_oldest_draft();
         }
         let draft = self.drafts.entry(key.to_string()).or_insert_with(|| Draft {
             agent: agent.to_string(),
-            project: project_name(text(payload, "cwd")),
+            project: project_name(cwd),
             start: now,
             last_event: now,
             paths: HashSet::new(),
@@ -256,6 +256,68 @@ impl Recap {
         });
         draft.last_event = now;
         draft
+    }
+
+    /// One DeepSeek Harness turn, as its own bridge reported it.
+    ///
+    /// DSH does not go through the hook relay, so without this its sessions
+    /// never reached the recap at all: the numbers counted only the Claude Code
+    /// sessions DSH happens to run inside itself. A turn is the same thing here
+    /// as for any other agent — from the prompt to the end of the answer — and
+    /// it lands under the `agent_dsh` pill so the statistics can name it.
+    pub fn observe_dsh_turn(&mut self, session_id: &str, cwd: &str, started: bool, now: i64) {
+        if !self.history.prefs.enabled {
+            return;
+        }
+        self.close_stale(now);
+        let key = dsh_session_key(session_id, cwd);
+        if started {
+            self.draft(&key, DSH_AGENT, cwd, now);
+            return;
+        }
+        if let Some(draft) = self.drafts.remove(&key) {
+            self.history.turns.push(draft.into_turn(now));
+            self.prune(now);
+            self.save();
+        }
+    }
+
+    /// One tool call of a DSH turn: a command, a file it touched, or both.
+    ///
+    /// The bridge sends the tool's own name (`pwsh`, `edit`, `write`…) and, when
+    /// it knows it, the path the call touched. A file counts once per turn, as
+    /// on the hook path; the line counts stay at zero because the bridge does
+    /// not send the diff — a number invented here would be worse than none.
+    pub fn observe_dsh_step(
+        &mut self,
+        session_id: &str,
+        cwd: &str,
+        tool: Option<&str>,
+        file: Option<&str>,
+        now: i64,
+    ) {
+        if !self.history.prefs.enabled {
+            return;
+        }
+        let key = dsh_session_key(session_id, cwd);
+        let draft = self.draft(&key, DSH_AGENT, cwd, now);
+        if let Some(tool) = tool {
+            if COMMAND_TOOLS.contains(&dsh_tool_name(tool)) {
+                draft.commands_run = draft.commands_run.saturating_add(1);
+            }
+        }
+        if let Some(file) = file.filter(|f| !f.is_empty()) {
+            draft.paths.insert(file.to_string());
+        }
+    }
+
+    /// A DSH permission request reached the island: remember whose it is, so the
+    /// click on the card is recorded as that agent's Allow / Deny.
+    pub fn note_dsh_request(&mut self, request_id: &str) {
+        if self.requests.len() >= MAX_REQUESTS {
+            self.requests.clear();
+        }
+        self.requests.insert(request_id.to_string(), DSH_AGENT.to_string());
     }
 
     fn close_oldest_draft(&mut self) {
@@ -487,6 +549,29 @@ fn agent_id(payload: &Value) -> String {
     }
 }
 
+/// The pill DeepSeek Harness's sessions are counted under.
+pub const DSH_AGENT: &str = "agent_dsh";
+
+/// Concurrent DSH sessions are tracked apart by the host's own session id; one
+/// without an id falls back to its folder, like the hook path.
+fn dsh_session_key(session_id: &str, cwd: &str) -> String {
+    if session_id.is_empty() {
+        format!("{DSH_AGENT}+{cwd}")
+    } else {
+        session_id.to_string()
+    }
+}
+
+/// The recap's name for a DSH tool, so one set of counting rules covers both.
+fn dsh_tool_name(tool: &str) -> &str {
+    match tool {
+        // DSH runs commands through its own shell tools; the hook path counts
+        // them under the names below.
+        "pwsh" | "powershell" | "bash" | "shell" | "terminal" => "bash",
+        other => other,
+    }
+}
+
 /// Concurrent sessions are tracked apart; one without an ID is keyed by its
 /// agent and folder, as HookServer.swift does.
 fn session_key(payload: &Value, agent: &str) -> String {
@@ -705,6 +790,31 @@ pub fn note_request(app: &AppHandle, request_id: &str, payload: &Value) {
     }
 }
 
+/// One DeepSeek Harness turn started or ended. DSH's sessions come over its own
+/// bridge, not the hook relay, so they are counted from there.
+pub fn observe_dsh_turn(app: &AppHandle, session_id: &str, cwd: &str, started: bool) {
+    if let Some(store) = app.try_state::<Store>() {
+        store.lock().observe_dsh_turn(session_id, cwd, started, now());
+    }
+    if started {
+        let _ = app.emit_to(WINDOW_LABEL, "recap-check", ());
+    }
+}
+
+/// One tool call of a DSH turn.
+pub fn observe_dsh_step(app: &AppHandle, session_id: &str, cwd: &str, tool: Option<&str>, file: Option<&str>) {
+    if let Some(store) = app.try_state::<Store>() {
+        store.lock().observe_dsh_step(session_id, cwd, tool, file, now());
+    }
+}
+
+/// A DSH permission request the island may answer.
+pub fn note_dsh_request(app: &AppHandle, request_id: &str) {
+    if let Some(store) = app.try_state::<Store>() {
+        store.lock().note_dsh_request(request_id);
+    }
+}
+
 pub fn forget_request(app: &AppHandle, request_id: &str) {
     if let Some(store) = app.try_state::<Store>() {
         store.lock().forget_request(request_id);
@@ -868,6 +978,44 @@ mod tests {
         assert_eq!(agent_id(&json!({ "coucou_agent": "claude-desktop", "term_editor": "cursor" })), "agent_claude-desktop");
         assert_eq!(agent_id(&json!({ "coucou_agent": "copilot" })), "agent_copilot");
         assert_eq!(agent_id(&json!({})), "integration_claude");
+    }
+
+    #[test]
+    fn a_dsh_turn_is_counted_like_any_other_agents() {
+        // DSH's sessions come over its own bridge, not the hook relay: before
+        // this they never reached the recap, and the statistics counted only
+        // the Claude Code sessions DSH runs inside itself.
+        let dir = scratch("dsh-turn");
+        let mut r = Recap::load(dir.join("recap.json"), T0);
+        r.observe_dsh_turn("sess-1", "C:\\work\\my-project", true, T0);
+        r.observe_dsh_step("sess-1", "C:\\work\\my-project", Some("pwsh"), None, T0 + 10);
+        r.observe_dsh_step("sess-1", "C:\\work\\my-project", Some("edit"), Some("src/a.rs"), T0 + 20);
+        r.observe_dsh_step("sess-1", "C:\\work\\my-project", Some("edit"), Some("src/a.rs"), T0 + 30);
+        r.observe_dsh_turn("sess-1", "C:\\work\\my-project", false, T0 + 60);
+
+        let turns = r.view(0).turns;
+        assert_eq!(turns.len(), 1);
+        let turn = &turns[0];
+        assert_eq!(turn.agent, "agent_dsh", "the pill it is counted under");
+        assert_eq!(turn.project, "my-project");
+        assert_eq!((turn.start, turn.end), (T0, T0 + 60));
+        assert_eq!(turn.commands_run, 1, "pwsh is a command, as on the hook path");
+        assert_eq!(turn.files_changed, 1, "one file, however many edits");
+        assert_eq!((turn.lines_added, turn.lines_removed), (0, 0), "no diff is claimed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dsh_card_answered_in_the_island_is_a_decision() {
+        let dir = scratch("dsh-decision");
+        let mut r = Recap::load(dir.join("recap.json"), T0);
+        r.note_dsh_request("req-1");
+        r.record_decision("req-1", "allow", T0);
+        let decisions = r.view(0).decisions;
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].agent, "agent_dsh");
+        assert_eq!(decisions[0].decision, "allow");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

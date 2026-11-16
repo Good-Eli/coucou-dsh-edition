@@ -256,7 +256,7 @@ test("a refused change says why and claims nothing", async () => {
   assert.match(DshConfig.error, /unknown model/);
   // The session still shows the old model: nothing was applied.
   const task = State.tasks.find((t) => t.id === "dsh");
-  assert.equal(task.finalLine, "DeepSeek-V4.1-Flash · HIGH");
+  assert.equal(task.modelLine, "DeepSeek-V4.1-Flash · HIGH");
 });
 
 test("an answer to another request is ignored", async () => {

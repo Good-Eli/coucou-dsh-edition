@@ -45,6 +45,20 @@ export interface DshSession {
   since?: number | null;
   /** `ask` or `never`, as DSH reported it. Under `never` no card can appear. */
   approvalPolicy?: string | null;
+  /** The newest tool steps of the current turn, oldest first. */
+  steps?: string[];
+  /** How many steps the turn has run in total; `steps` is capped. */
+  stepSeq?: number;
+}
+
+/** Today's PlusVibeAPI spend, as the bridge read it from the provider. */
+export interface DshUsage {
+  /** Prompt plus completion tokens billed today. */
+  tokens: number;
+  /** What the provider charged today, in roubles. */
+  rub: number;
+  /** The local day (`YYYY-MM-DD`) the figures belong to. */
+  day?: string | null;
 }
 
 /** A question waiting for a click. */
@@ -76,6 +90,8 @@ export interface DshSnapshot {
   hardened: boolean;
   sessions: DshSession[];
   catalog: DshCatalog;
+  /** Today's PlusVibeAPI spend, when the bridge could read it. */
+  usage?: DshUsage | null;
   pending: DshApproval[];
   activeSession?: string | null;
   updatedAt: number;
@@ -122,6 +138,48 @@ export function neverAsks(snapshot: DshSnapshot | null, session: DshSession | nu
   return policy === "never";
 }
 
+/**
+ * Today's spend as the closed island shows it: "55M / 33,41 ₽".
+ *
+ * The number comes from the provider's own records, so it is reported, never
+ * computed here. A total from an earlier day is dropped rather than shown as
+ * today's — the day key is local, which is what the person reading it means.
+ * No figures at all returns null, and the island falls back to its other face.
+ */
+export function usageLine(usage: DshUsage | null | undefined, now = new Date()): string | null {
+  if (!usage) return null;
+  if (usage.day && usage.day !== localDayKey(now)) return null;
+  const tokens = Number(usage.tokens);
+  const rub = Number(usage.rub);
+  if (!Number.isFinite(tokens) && !Number.isFinite(rub)) return null;
+  const left = Number.isFinite(tokens) && tokens > 0 ? compactTokens(tokens) : "0";
+  const right = Number.isFinite(rub) && rub > 0 ? rubles(rub) : "0 ₽";
+  return `${left} / ${right}`;
+}
+
+/** `YYYY-MM-DD` of a local date. */
+function localDayKey(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** 55_300_000 → "55M", 1_240_000 → "1,2M", 8_400 → "8,4K". */
+export function compactTokens(tokens: number): string {
+  const n = Math.max(0, Math.round(tokens));
+  if (n < 1000) return String(n);
+  const [value, suffix] = n < 1_000_000 ? [n / 1000, "K"] : [n / 1_000_000, "M"];
+  // One decimal, and only when it says something: "55M", not "55,0M".
+  const rounded = Math.round(value * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1).replace(".", ",")}${suffix}`;
+}
+
+/** 33.41 → "33,41 ₽"; 0 → "0 ₽"; below a kopeck → "<0,01 ₽". */
+export function rubles(rub: number): string {
+  if (!(rub > 0)) return "0 ₽";
+  if (rub < 0.01) return "<0,01 ₽";
+  return `${rub.toFixed(2).replace(".", ",")} ₽`;
+}
+
 /** A model's display name, from the catalog, never invented. */
 function modelName(providerId: string, modelId: string, catalog: DshCatalog | undefined): string {
   const provider = catalog?.providers.find((p) => p.id === providerId);
@@ -161,6 +219,17 @@ export function sessionLine(session: DshSession | null): string {
   if (title) return title;
   const folder = session.cwd?.split(/[\\/]/).filter(Boolean).pop();
   return folder ?? "";
+}
+
+/**
+ * What the session's card is about: the dialog's own title, else its folder.
+ *
+ * DSH names a session after the project it runs in; that name is the one thing
+ * that tells two open dialogs apart, so it leads the card. The pill keeps the
+ * tool's name — the card is where the session itself is named.
+ */
+export function sessionHeading(session: DshSession | null): string {
+  return sessionLine(session);
 }
 
 /** The island's own state names, so DSH draws with the same animation. */

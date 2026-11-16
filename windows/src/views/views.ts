@@ -13,6 +13,7 @@ import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 import { highlightRow, listRows, openRow } from "./github";
 import { pillDefinition, sessionSubtitle } from "../core/pills";
+import { DSH_PILL_ID, Dsh, activeSession, sessionHeading } from "../core/dsh";
 import {
   PlanCard, buildPlanPill, claudePillVisible, codexPillVisible, planCardOpen, refreshCodexPlanUsage,
 } from "./usage";
@@ -385,18 +386,30 @@ function buildOverview(actions: ViewActions): ViewHost {
           cardKey = "";
         }
         clear(who);
-        // The agent's name is already the pill's: the label says what kind of
-        // pill it is, as on the Mac (PillDefinition.sessionSubtitle).
-        who.append(
-          dot(task.color, 7),
-          h("span", { class: "name", text: task.name }),
-          h("span", { class: "tool", text: t(sessionSubtitle(task.id)) }),
-        );
-        if (task.steps.length > 1) {
-          who.append(h("span", {
-            class: "count",
-            text: `${Math.min(task.stepIndex + 1, task.steps.length)}/${task.steps.length}`,
-          }));
+        who.className = task.id === DSH_PILL_ID ? "who stacked" : "who";
+        if (task.id === DSH_PILL_ID) {
+          // DeepSeek Harness: the card is about one dialog, so it leads with
+          // that dialog's name and the model it runs, not with the word
+          // "Agent" and a count of identical lines.
+          const session = activeSession(Dsh.snapshot);
+          const heading = sessionHeading(session);
+          who.append(dot(task.color, 7));
+          who.append(h("span", { class: "name", text: heading || task.name }));
+          if (task.modelLine) who.append(h("span", { class: "tool", text: task.modelLine }));
+        } else {
+          // The agent's name is already the pill's: the label says what kind of
+          // pill it is, as on the Mac (PillDefinition.sessionSubtitle).
+          who.append(
+            dot(task.color, 7),
+            h("span", { class: "name", text: task.name }),
+            h("span", { class: "tool", text: t(sessionSubtitle(task.id)) }),
+          );
+          if (task.steps.length > 1) {
+            who.append(h("span", {
+              class: "count",
+              text: `${Math.min(task.stepIndex + 1, task.steps.length)}/${task.steps.length}`,
+            }));
+          }
         }
         ticker.sync(task);
       } else if (task && task.id === SPOTIFY_ID) {

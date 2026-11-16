@@ -110,6 +110,8 @@ const AGENT_NAMES: Record<string, string> = {
   agent_amp: "Amp",
   agent_hermes: "Hermes",
   "agent_claude-desktop": "Claude Desktop",
+  // DeepSeek Harness over its own bridge. Without this it read as "Dsh".
+  agent_dsh: "DeepSeek Harness",
 };
 
 export function agentName(id: string): string {

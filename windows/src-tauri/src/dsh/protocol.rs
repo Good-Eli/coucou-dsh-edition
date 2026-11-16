@@ -146,6 +146,14 @@ pub struct Session {
     /// no card can appear no matter how healthy the bridge is.
     #[serde(default)]
     pub approval_policy: Option<String>,
+    /// The newest tool steps, oldest first. Filled from `session.step` frames —
+    /// never by the plugin's upsert, which would clear them on every event.
+    #[serde(default)]
+    pub steps: Vec<String>,
+    /// How many steps this session has run in total. `steps` is capped, so this
+    /// is what keeps the ticker moving once the list is full.
+    #[serde(default)]
+    pub step_seq: u32,
 }
 
 /// The first frame after a successful handshake.
@@ -167,6 +175,27 @@ pub struct Ready {
     pub catalog: Catalog,
     #[serde(default)]
     pub sessions: Vec<Session>,
+}
+
+/// Today's PlusVibeAPI spend, as the plugin read it from the account.
+///
+/// The bridge owns this because the API key lives in DSH's own credential
+/// store: the plugin resolves the reference and asks the provider, and Coucou
+/// only draws the number. Nothing is estimated here — the provider's own
+/// records for today are summed, so a day with no requests reads as zero.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Usage {
+    /// Prompt plus completion tokens billed today.
+    #[serde(default)]
+    pub tokens: i64,
+    /// What the provider charged today, in roubles.
+    #[serde(default)]
+    pub rub: f64,
+    /// The local day (`YYYY-MM-DD`) these numbers belong to. The island drops a
+    /// total from an earlier day instead of showing it as today's.
+    #[serde(default)]
+    pub day: Option<String>,
 }
 
 /// A question the island may answer.
@@ -238,6 +267,9 @@ pub enum Frame {
         tool: Option<String>,
         #[serde(default)]
         title: Option<String>,
+        /// The file the call touched, when the bridge can name it.
+        #[serde(default)]
+        file: Option<String>,
     },
 
     #[serde(rename = "approval.asked")]
@@ -248,6 +280,10 @@ pub enum Frame {
 
     #[serde(rename = "catalog")]
     Catalog(Catalog),
+
+    /// Today's PlusVibeAPI spend, pushed by the plugin when it refreshes.
+    #[serde(rename = "usage")]
+    Usage(Usage),
 
     #[serde(rename = "pong")]
     Pong { #[serde(default)] ts: Option<i64> },
@@ -393,6 +429,46 @@ mod tests {
         assert_eq!(asked.request_id, "r1");
         assert_eq!(asked.tool, "pwsh");
         assert_eq!(asked.files, ["a.rs"]);
+    }
+
+    #[test]
+    fn a_step_carries_what_the_agent_did_and_the_file_it_touched() {
+        let line = r#"{"t":"session.step","sessionId":"s1","tool":"edit",
+            "title":"edit src/main.rs","file":"src/main.rs"}"#;
+        let Frame::SessionStep { session_id, tool, title, file } = serde_json::from_str::<Frame>(line).unwrap()
+        else {
+            panic!("expected session.step")
+        };
+        assert_eq!(session_id, "s1");
+        assert_eq!(tool.as_deref(), Some("edit"));
+        assert_eq!(title.as_deref(), Some("edit src/main.rs"));
+        assert_eq!(file.as_deref(), Some("src/main.rs"));
+        // An older plugin sends only the tool's name; that is still a step.
+        let Frame::SessionStep { title, file, .. } =
+            serde_json::from_str::<Frame>(r#"{"t":"session.step","sessionId":"s1","tool":"pwsh"}"#).unwrap()
+        else {
+            panic!("expected session.step")
+        };
+        assert!(title.is_none());
+        assert!(file.is_none());
+    }
+
+    #[test]
+    fn the_spend_arrives_as_its_own_frame() {
+        let line = r#"{"t":"usage","tokens":55300000,"rub":33.41,"day":"2026-11-16"}"#;
+        let Frame::Usage(usage) = serde_json::from_str::<Frame>(line).unwrap() else {
+            panic!("expected usage")
+        };
+        assert_eq!(usage.tokens, 55_300_000);
+        assert_eq!(usage.rub, 33.41);
+        assert_eq!(usage.day.as_deref(), Some("2026-11-16"));
+        // A plugin that cannot read the account says nothing at all.
+        let Frame::Ready(ready) =
+            serde_json::from_str::<Frame>(r#"{"t":"ready","protocol":1,"approvals":{"enabled":true}}"#).unwrap()
+        else {
+            panic!("expected ready")
+        };
+        assert!(ready.approvals.is_enabled());
     }
 
     #[test]

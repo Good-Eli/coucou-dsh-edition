@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::protocol::{self, ApprovalAsked, Catalog, Frame, Ready, Selection, Session};
+use super::protocol::{self, ApprovalAsked, Catalog, Frame, Ready, Selection, Session, Usage};
 use super::wire::{self, Conn};
 
 /// How often the client proves the host is still there.
@@ -26,6 +26,9 @@ const HANDSHAKE_LIMIT: Duration = Duration::from_secs(5);
 const OPEN_LIMIT: Duration = Duration::from_secs(3);
 /// Pause before reconnecting after a failure.
 const RETRY_EVERY: Duration = Duration::from_secs(3);
+/// How many tool steps one session keeps for the island's ticker. The same cap
+/// the hook path uses (AgentTask.steps), so a long session does not grow here.
+const MAX_SESSION_STEPS: usize = 20;
 
 /// What the island shows about DSH.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -45,6 +48,8 @@ pub struct Snapshot {
     pub hardened: bool,
     pub sessions: Vec<Session>,
     pub catalog: Catalog,
+    /// Today's PlusVibeAPI spend, when the bridge could read it.
+    pub usage: Option<Usage>,
     /// Questions waiting for a click.
     pub pending: Vec<ApprovalAsked>,
     pub active_session: Option<String>,
@@ -86,6 +91,32 @@ impl Dsh {
 
 pub fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+/// One ticker line for a step: what the bridge described, else the tool's name.
+///
+/// The bridge already builds a readable line ("pwsh cargo test", "edit
+/// src/x.ts"), so its text wins; a frame with neither field is not a step and
+/// returns nothing rather than an empty row.
+fn step_line(title: Option<&str>, tool: Option<&str>) -> Option<String> {
+    let title = title.map(str::trim).filter(|t| !t.is_empty());
+    let tool = tool.map(str::trim).filter(|t| !t.is_empty());
+    title.or(tool).map(|line| line.chars().take(200).collect())
+}
+
+/// The folder a session runs in, for the recap's project name.
+fn session_cwd(app: &AppHandle, session_id: &str) -> String {
+    app.try_state::<Dsh>()
+        .and_then(|dsh| {
+            dsh.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .sessions
+                .iter()
+                .find(|s| s.id == session_id)
+                .map(|s| s.cwd.clone())
+        })
+        .unwrap_or_default()
 }
 
 /// Starts the client. It reconnects forever: DSH starting after Coucou, or
@@ -332,7 +363,17 @@ fn absorb(app: &AppHandle, line: &str) -> Result<(), String> {
 
         Frame::SessionUpsert { session } => publish(app, |s| {
             match s.sessions.iter_mut().find(|x| x.id == session.id) {
-                Some(existing) => *existing = session,
+                Some(existing) => {
+                    // The plugin re-sends the session on every change (a title,
+                    // a model, a state). Its copy knows nothing about the steps
+                    // this side collected from `session.step`, so the two are
+                    // merged rather than one replacing the other.
+                    let steps = std::mem::take(&mut existing.steps);
+                    let step_seq = existing.step_seq;
+                    *existing = session;
+                    existing.steps = steps;
+                    existing.step_seq = step_seq;
+                }
                 None => s.sessions.push(session),
             }
         }),
@@ -352,31 +393,65 @@ fn absorb(app: &AppHandle, line: &str) -> Result<(), String> {
             }
         }),
 
-        Frame::SessionTurn { session_id, phase, .. } => publish(app, |s| {
-            if let Some(session) = s.session_mut(&session_id) {
-                if phase == "start" {
-                    session.state = Some("thinking".into());
-                    session.since = Some(now_ms());
+        Frame::SessionTurn { session_id, phase, .. } => {
+            let mut cwd = String::new();
+            publish(app, |s| {
+                if let Some(session) = s.session_mut(&session_id) {
+                    cwd = session.cwd.clone();
+                    if phase == "start" {
+                        session.state = Some("thinking".into());
+                        session.since = Some(now_ms());
+                        // A new turn starts with a clean ticker: the previous
+                        // turn's steps belong to the previous turn.
+                        session.steps.clear();
+                    }
                 }
-            }
-        }),
+            });
+            // A turn is a turn, whichever agent runs it: the recap counts DSH's
+            // sessions next to Claude Code's, under its own pill.
+            crate::recap::observe_dsh_turn(app, &session_id, &cwd, phase == "start");
+        }
 
-        // A step tick is what the island animates; the session's own state
-        // frames already carry what the UI shows.
-        Frame::SessionStep { .. } => {}
-
-        Frame::ApprovalAsked(asked) => publish(app, |s| {
-            // The plugin can re-send after a reconnect; one card per request.
-            if !s.pending.iter().any(|p| p.request_id == asked.request_id) {
-                s.pending.push(asked);
+        // A step tick is what the island animates, and what the recap counts as
+        // a tool call: it used to be dropped here, which left the card showing
+        // the session's title over and over instead of what the agent did.
+        Frame::SessionStep { session_id, tool, title, file } => {
+            let cwd = session_cwd(app, &session_id);
+            let line = step_line(title.as_deref(), tool.as_deref());
+            if let Some(line) = &line {
+                publish(app, |s| {
+                    if let Some(session) = s.session_mut(&session_id) {
+                        session.steps.push(line.clone());
+                        if session.steps.len() > MAX_SESSION_STEPS {
+                            let excess = session.steps.len() - MAX_SESSION_STEPS;
+                            session.steps.drain(..excess);
+                        }
+                        session.step_seq = session.step_seq.saturating_add(1);
+                    }
+                });
             }
-        }),
+            crate::recap::observe_dsh_step(app, &session_id, &cwd, tool.as_deref(), file.as_deref());
+        }
+
+        Frame::ApprovalAsked(asked) => {
+            // The island's click is an Allow / Deny like any other, so the
+            // recap learns whose request it was before the card is answered.
+            crate::recap::note_dsh_request(app, &asked.request_id);
+            publish(app, |s| {
+                // The plugin can re-send after a reconnect; one card per request.
+                if !s.pending.iter().any(|p| p.request_id == asked.request_id) {
+                    s.pending.push(asked);
+                }
+            })
+        }
 
         Frame::ApprovalResolved { request_id, .. } => publish(app, |s| {
             s.pending.retain(|p| p.request_id != request_id);
         }),
 
         Frame::Catalog(catalog) => publish(app, |s| s.catalog = catalog),
+
+        Frame::Usage(usage) => publish(app, |s| s.usage = Some(usage)),
 
         Frame::Pong { .. } => {}
 
@@ -501,6 +576,13 @@ pub fn dsh_approval(app: AppHandle, request_id: String, decision: String) -> Res
     };
     if !queue(&app, frame) {
         return Err("DSH is not connected".into());
+    }
+    // The recap counts an answered card like any other Allow / Deny. Handing the
+    // question back to DSH ("open") is not a decision, so it is forgotten.
+    if decision == "open" {
+        crate::recap::forget_request(&app, &request_id);
+    } else {
+        crate::recap::record_decision(&app, &request_id, &decision);
     }
     publish(&app, |s| s.pending.retain(|p| p.request_id != request_id));
     Ok(())

@@ -112,6 +112,17 @@ test("top agent and top project go by number of sessions", () => {
   assert.equal(s.longestSessionMinutes, 360);
 });
 
+test("DeepSeek Harness's sessions are named, not spelled out of their id", () => {
+  // The bridge now records DSH's turns as `agent_dsh`; without a name here the
+  // statistics would call it "Dsh".
+  const d = (day, h) => new Date(2026, 8, 28 + day, h);
+  const s = summarize(history([
+    turn(d(1, 9), d(1, 12), { agent: "agent_dsh", project: "coucou" }),
+  ]), LAST_MONDAY);
+  assert.equal(s.topAgent, "DeepSeek Harness");
+  assert.equal(s.sessionCount, 1, "a DSH session is a session like any other");
+});
+
 test("ties are settled the same way every time", () => {
   const d = (day, h) => new Date(2026, 8, 28 + day, h);
   const s = summarize(history([

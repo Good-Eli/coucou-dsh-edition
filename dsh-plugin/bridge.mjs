@@ -643,13 +643,13 @@ export function apply(ctx, rawConfig) {
           ts: Date.now(),
           reason: clip(event.data?.reason ?? '', 120),
         });
+        // A turn just spent money: the island's total may have moved.
+        void refreshUsage();
         break;
 
-      case 'tool/call':
-        calls.set(event.data?.callId, {
-          name: event.data?.name,
-          arguments: parseJson(event.data?.arguments),
-        });
+      case 'tool/call': {
+        const args = parseJson(event.data?.arguments);
+        calls.set(event.data?.callId, { name: event.data?.name, arguments: args });
         if (calls.size > 200) calls.delete(calls.keys().next().value);
         if (record) {
           record.state = 'working';
@@ -661,9 +661,12 @@ export function apply(ctx, rawConfig) {
           ts: Date.now(),
           kind: 'tool',
           tool: clip(event.data?.name ?? '', 60),
-          title: stepTitle(event.data?.name, parseJson(event.data?.arguments)),
+          title: stepTitle(event.data?.name, args),
+          // The file the call touched, so Coucou's statistics can count it.
+          file: touchedFile(args),
         });
         break;
+      }
 
       case 'approval/policy':
         // The user switched the session's permission preset. Only `ask` makes
@@ -772,6 +775,10 @@ export function apply(ctx, rawConfig) {
           });
         });
         log('info', 'pipe: Coucou connected');
+        // The spend is account-wide and cheap to keep warm, so the island gets
+        // it the moment it asks rather than after its own five minutes.
+        if (usage) send({ t: 'usage', ...usage });
+        void refreshUsage();
         return;
       }
       handle(message);
@@ -841,6 +848,40 @@ export function apply(ctx, rawConfig) {
         break;
     }
   }
+
+  // ── PlusVibeAPI spend ──────────────────────────────────────────────────────
+  //
+  // The closed island shows today's tokens and roubles. The key lives in DSH's
+  // own credential store (the same reference the model provider uses), so the
+  // provider is asked from here, where that store is reachable — Coucou never
+  // sees the key and never guesses a price.
+
+  let usage = null;
+  let usageAt = 0;
+  let usageBusy = false;
+
+  const refreshUsage = async (force = false) => {
+    if (usageBusy) return;
+    if (!force && Date.now() - usageAt < USAGE_MIN_GAP_MS) return;
+    usageBusy = true;
+    try {
+      const value = await plusvibeUsage(ctx, log);
+      if (value) {
+        usage = value;
+        usageAt = Date.now();
+        send({ t: 'usage', ...value });
+      }
+    } catch (error) {
+      log('warn', `usage: cannot read the PlusVibeAPI spend: ${clip(error?.message ?? error)}`);
+    } finally {
+      usageBusy = false;
+    }
+  };
+
+  const usageTimer = setInterval(() => void refreshUsage(), USAGE_EVERY_MS);
+  if (typeof usageTimer.unref === 'function') usageTimer.unref();
+  ctx.effect(() => () => clearInterval(usageTimer));
+  void refreshUsage(true);
 
   // ── transport ──────────────────────────────────────────────────────────────
 
@@ -955,6 +996,86 @@ export function apply(ctx, rawConfig) {
 
 /** How often this instance looks for a newer bridge beside itself. */
 const RELOAD_CHECK_MS = 5000;
+
+/** The credential reference the model provider itself uses for PlusVibeAPI. */
+const PLUSVIBE_REF = 'PLUSVIBE_API_KEY';
+const PLUSVIBE_BASE = 'https://plusvibeapi.ru';
+/** The provider's day total moves slowly; five minutes is plenty. */
+const USAGE_EVERY_MS = 5 * 60_000;
+/** …but a turn end should not turn into a request storm. */
+const USAGE_MIN_GAP_MS = 60_000;
+
+/** Local midnight, which is what "today" means to the person reading it. */
+function localDayStart(now = new Date()) {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+}
+
+function dayKey(date) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+const finite = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
+
+/**
+ * Today's spend, read from PlusVibeAPI's own records.
+ *
+ * The key is resolved through `ctx.credentials` on every call and never kept
+ * here: a rotated key reaches the next refresh without a restart, and the value
+ * never sits in this file's memory longer than the request. The numbers are the
+ * provider's own — a key that cannot be resolved, or a provider that answers
+ * nothing, leaves the island without a number rather than with a guess.
+ */
+async function plusvibeUsage(ctx, log) {
+  const credentials = ctx.get?.('credentials');
+  if (!credentials || typeof credentials.resolve !== 'function') return null;
+
+  let key;
+  try {
+    key = (await credentials.resolve(PLUSVIBE_REF))?.value;
+  } catch (error) {
+    log('debug', `usage: cannot resolve ${PLUSVIBE_REF}: ${clip(error?.message ?? error)}`);
+    return null;
+  }
+  if (typeof key !== 'string' || key === '') return null;
+
+  const start = localDayStart();
+  const from = encodeURIComponent(start.toISOString());
+  let tokens = 0;
+  let rub = 0;
+  // One page is the normal case; the loop only exists because a busy day can
+  // have more records than the page size.
+  for (let page = 1; page <= 20; page += 1) {
+    const url = `${PLUSVIBE_BASE}/v1/generations?limit=100&page=${page}&dateFrom=${from}`;
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw new Error(`the usage API answered ${response.status}`);
+    const body = await response.json();
+    const rows = Array.isArray(body?.data) ? body.data : [];
+    for (const row of rows) {
+      // The API has carried both spellings; read either rather than guess.
+      tokens += finite(row.promptTokens ?? row.prompt_tokens) + finite(row.completionTokens ?? row.completion_tokens);
+      rub += finite(row.priceRub ?? row.cost_rub);
+    }
+    const total = finite(body?.total);
+    if (rows.length < 100 || page * 100 >= total) break;
+  }
+  return { tokens, rub, day: dayKey(start) };
+}
+
+/**
+ * The file a tool call touched, when its arguments name one.
+ *
+ * Only a name for Coucou's statistics — the arguments themselves are never
+ * forwarded, and nothing is read from the path.
+ */
+function touchedFile(args) {
+  const raw = args?.file_path ?? args?.path;
+  if (typeof raw !== 'string' || raw === '') return null;
+  return clip(raw, 260);
+}
 
 /**
  * Watches this module's folder and hands over to a newer build.

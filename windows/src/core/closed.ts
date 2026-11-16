@@ -9,9 +9,9 @@
 
 import { dominantPct, planColor, type PlanUsage } from "./plan";
 
-export type ClosedIsland = "mochi" | "time" | "datetime" | "claude" | "music" | "empty" | "hidden";
+export type ClosedIsland = "mochi" | "time" | "datetime" | "claude" | "usage" | "music" | "empty" | "hidden";
 
-export const CLOSED_ISLANDS: readonly ClosedIsland[] = ["mochi", "time", "datetime", "claude", "music", "empty", "hidden"];
+export const CLOSED_ISLANDS: readonly ClosedIsland[] = ["mochi", "time", "datetime", "claude", "usage", "music", "empty", "hidden"];
 
 /** A value this build doesn't know (written by a newer one) reads as the default. */
 export function closedIsland(value: unknown): ClosedIsland {
@@ -42,6 +42,13 @@ export interface ClosedInputs {
   /** The interface's language, for the date and the time. */
   locale?: string;
   planUsage: PlanUsage | null;
+  /**
+   * Today's PlusVibeAPI spend, already formatted ("55M / 33,41 ₽"), or null
+   * while the provider has not answered. Formatted by the caller so this file
+   * stays free of the bridge's types; null shows nothing rather than a zero the
+   * provider never reported.
+   */
+  usage: string | null;
   /** The song playing, if one plays on a declared music pill. */
   music: { title: string; artist: string } | null;
 }
@@ -73,6 +80,12 @@ export function closedContent(style: ClosedIsland, input: ClosedInputs): ClosedC
       const pct = dominantPct(input.planUsage, input.now.getTime());
       if (pct == null) return plain(time(input.now, input.locale));
       return { text: `Claude ${Math.round(pct)}%`, dot: planColor(pct), note: false };
+    }
+    case "usage": {
+      // Today's spend, and nothing else: no date and no clock beside it. With
+      // no figure from the provider the island keeps its empty shape — a zero
+      // here would be a claim nobody made.
+      return input.usage ? plain(input.usage) : null;
     }
     case "music": {
       const m = input.music;

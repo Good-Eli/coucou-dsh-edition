@@ -15,9 +15,9 @@ import {
 } from "../core/layout";
 import { cornerRadius, growsUp } from "../core/corners";
 import { Sound } from "../core/sound";
-import { DSH_PILL_ID as DSH_ID, routeFor } from "../core/dsh";
+import { DSH_PILL_ID as DSH_ID, Dsh, routeFor, usageLine } from "../core/dsh";
 import { chooseEffort, chooseModel } from "./dsh";
-import { State } from "../core/state";
+import { State, compactIslandMode } from "../core/state";
 import { SPOTIFY_ID, Spotify, islandDances } from "../core/spotify";
 import { BotEngine, hexToRGB } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
@@ -1082,6 +1082,7 @@ export class Island {
         now: new Date(),
         locale: language(),
         planUsage: State.planUsage,
+        usage: usageLine(Dsh.snapshot?.usage),
         music: State.spotifyPlaying && track ? { title: track.title, artist: track.artist } : null,
       })
       : null;
@@ -1631,14 +1632,25 @@ export class Island {
   /** The clock sits in the middle of the compact island, where the notch is on a Mac. */
   private updateClock() {
     this.updateClosed();
-    const on = State.mode === "compact" && State.settings.showClock;
+    const mode = compactIslandMode(State.settings);
+    const on = State.mode === "compact" && mode !== "none";
     this.clockEl.style.opacity = on ? "1" : "0";
     if (!on) return;
+    // What the middle holds is a choice: the clock, or today's spend. The spend
+    // never has the date and the time beside it — that is what was asked for,
+    // and two numbers in a row would read as one.
+    const text = mode === "usage"
+      ? (usageLine(Dsh.snapshot?.usage) ?? "")
+      : this.clockText();
+    if (this.clockEl.textContent !== text) this.clockEl.textContent = text;
+  }
+
+  /** "Thu 14 Nov  14:05", in the interface's language. */
+  private clockText(): string {
     const now = new Date();
     const date = now.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
     const time = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    const text = `${date}  ${time}`;
-    if (this.clockEl.textContent !== text) this.clockEl.textContent = text;
+    return `${date}  ${time}`;
   }
 
   /** Applies settings coming from Rust at boot. */
