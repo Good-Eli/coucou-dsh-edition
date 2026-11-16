@@ -52,11 +52,26 @@ export interface ViewLayout {
   botY: number | null; // null = auto-centred
   botDiameter: number;
   agentMode: AgentLayoutMode;
+  /**
+   * The island's width for this view, when it differs from `EXPANDED_W`.
+   *
+   * The overview needs the room: with four or more pills the card beside them is
+   * squeezed to 322 pixels and its own name and model no longer fit. The other
+   * cards are laid out for the standard width, so only the view that asks for
+   * more gets it — widening everything would leave the approval and mail cards
+   * with a strip of nothing on the right.
+   */
+  width?: number;
 }
 
-// The window is a fixed 720×320 (largest view) like the macOS panel; the island is
-// drawn inside it, glued to the top edge and horizontally centred.
-export const PANEL_W = 720;
+/** The overview's width: `EXPANDED_W` plus 75, which is what the card was short. */
+export const OVERVIEW_W = 715;
+
+// The window is a fixed 795×320 (largest view) like the macOS panel; the island is
+// drawn inside it, glued to the top edge and horizontally centred. The window grew
+// by 75 when the overview did: with four or more pills the card beside them had 322
+// pixels, and its own dialog name and model no longer fitted.
+export const PANEL_W = 795;
 export const PANEL_H = 320;
 
 // No notch on a PC: these are the hidden/compact sizes from docs/SPEC.md.
@@ -73,7 +88,10 @@ export const WAKE_STRIP_W = 240;
 export const WAKE_STRIP_H = 6;
 
 export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
-  overview: { height: 160, botX: 68, botY: null, botDiameter: 58, agentMode: "pills" },
+  // 176, not the Mac's 160: two columns of pills are three rows of 36, which is
+  // 116 pixels, and the card has 108 at 160 — the third row was cut off by the
+  // island's own edge. 176 leaves the card 124 and the row a little air.
+  overview: { height: 176, botX: 68, botY: null, botDiameter: 58, agentMode: "pills", width: OVERVIEW_W },
   empty: { height: 160, botX: 70, botY: null, botDiameter: 62, agentMode: "none" },
   approval: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
   question: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
@@ -139,7 +157,7 @@ export function islandSize(
       return { w: COMPACT_W, h: NOTCH_H };
     case "expanded": {
       const h = view === "prompt" ? chatPromptHeight(chatCount) : VIEW_LAYOUTS[view].height;
-      return { w: EXPANDED_W, h };
+      return { w: VIEW_LAYOUTS[view].width ?? EXPANDED_W, h };
     }
   }
 }

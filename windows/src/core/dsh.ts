@@ -261,20 +261,26 @@ export function activeSession(snapshot: DshSnapshot | null): DshSession | null {
 /**
  * The colours a dialog's Mochi may wear.
  *
- * Chosen to be told apart on the dark card and from each other: eight tones that
- * stay readable as a 24-pixel body, a name beside it, and a 58-pixel Mochi in
- * the card. None of them is the tool's own blue, so the overview pill is never
- * mistaken for a dialog.
+ * Ten tones, evenly spaced around the colour wheel — 36° apart, so no two can be
+ * mistaken for each other, and the list never looks like "everything is blue and
+ * pink". That was the first palette's problem: it had eight tones, but two were
+ * blues (about 20° apart) and two were pinks (12° apart).
+ *
+ * The spacing is the rule, so the values are generated from it: hue = 15 + 36·i,
+ * at 68% saturation and 64% lightness — bright enough to read as a 24-pixel body
+ * on the near-black card, and light enough that a name beside it stays legible.
  */
 const SESSION_COLORS = [
-  "#4C8DFF",
-  "#2DD4BF",
-  "#A78BFA",
-  "#F59E0B",
-  "#4ADE80",
-  "#F472B6",
-  "#38BDF8",
-  "#FB7185",
+  "#e28465", // 15°  orange
+  "#e2cf65", // 51°  yellow
+  "#a9e265", // 87°  lime
+  "#65e26b", // 123° green
+  "#65e2b6", // 159° spring
+  "#65c2e2", // 195° sky
+  "#6578e2", // 231° blue
+  "#9d65e2", // 267° violet
+  "#e265db", // 303° magenta
+  "#e26590", // 339° rose
 ];
 
 /**

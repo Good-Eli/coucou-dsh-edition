@@ -548,12 +548,45 @@ body {
   flex: 0 0 auto;
 }
 
+/*
+ * The pill column: a layout box, not a card.
+ *
+ * It used to be a `.card` — 20-pixel corners with `overflow: hidden` — holding
+ * pills with 14-pixel corners inset by 8. Two curves 8 pixels apart, neither
+ * concentric with the other (the inner one should be 20 − 8 = 12), read as a
+ * frame that does not fit its contents. Worse, the hidden overflow cut the glow
+ * a hovered pill casts, so the highlight ended in a hard edge at the column's
+ * border.
+ *
+ * The pills already have a background and a border of their own; a second frame
+ * around a list adds nothing. So the column is transparent and does not clip.
+ */
+.pill-column {
+  position: relative;
+  height: 100%;
+  overflow: visible;
+}
+
 .overview.wide > .right {
   display: none;
 }
 
+/*
+ * The pill width is what makes the card's width come out right.
+ *
+ * The arithmetic, with the island at 715 (640 + 75):
+ *   two columns of 134 + a 4-pixel gap + 16 of padding = 288, which is exactly
+ *   what the pills occupied before, so the card gets 715 − 20 − 288 − 10 = 397 —
+ *   the 322 it had, plus the 75 it was short.
+ *   one column of 174 leaves the card 495, because there is only one column to
+ *   pay for; the extra width goes to the pill, where a long title needs it.
+ */
 .overview.one-col .pills {
   grid-template-columns: 174px;
+}
+
+.overview.two-col .pills {
+  grid-template-columns: repeat(2, 134px);
 }
 
 .card-body {
@@ -666,6 +699,11 @@ body {
   gap: 6px;
   transform-origin: left center;
   will-change: transform, opacity;
+}
+
+/* A row with no text yet: its place is kept, but nothing is drawn. */
+.ticker-row.empty {
+  visibility: hidden;
 }
 
 .ticker-row .tick-icon {
@@ -846,8 +884,9 @@ body {
   height: 100%;
   display: grid;
   /* Fixed cells: the column is as wide as its pills and never wider, so the
-     card beside it can take everything that is left. */
-  grid-template-columns: repeat(2, 174px);
+     card beside it can take everything that is left. The per-layout width is set
+     by `.overview.one-col` and `.overview.two-col` below. */
+  grid-template-columns: repeat(2, 134px);
   grid-auto-rows: 36px;
   gap: 4px;
   align-content: center;

@@ -66,7 +66,7 @@ function makeRow(): Row {
   const counts = h("span", { class: "tick-count" }, plus, minus);
   const el = h(
     "div",
-    { class: "ticker-row" },
+    { class: "ticker-row empty" },
     h("span", { class: "tick-icon", style: "position:relative" }, chevron, check),
     body,
   );
@@ -74,6 +74,9 @@ function makeRow(): Row {
 }
 
 function setText(row: Row, text: string) {
+  // The empty class is applied even when the text has not changed: a row starts
+  // out empty and must start out hidden, or the card draws blank rows.
+  row.el.classList.toggle("empty", text.trim() === "");
   if (row.text === text) return;
   row.text = text;
   const diff = parseDiffStep(text);
@@ -177,8 +180,8 @@ export class Ticker {
       this.queue = [];
       this.startMs = null;
       this.displayIndex = newest;
-      setText(this.a, steps.at(-2) ?? "…");
-      setText(this.b, steps.at(-1) ?? "…");
+      setText(this.a, steps.at(-2) ?? "");
+      setText(this.b, steps.at(-1) ?? "");
       this.rest();
       return;
     }

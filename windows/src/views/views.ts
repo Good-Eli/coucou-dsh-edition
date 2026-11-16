@@ -283,7 +283,11 @@ function buildOverview(actions: ViewActions): ViewHost {
   );
   const left = card(null, leftBody, jump);
   const pills = h("div", { class: "pills" });
-  const right = card(null, pills);
+  // The pill column is a list, not a panel: the pills carry their own border and
+  // background, so a second frame around them only added a nested curve — and
+  // its `overflow: hidden` cut off the glow a hovered pill casts. The column is
+  // therefore a bare layout box; `.pills` alone decides how it looks.
+  const right = h("div", { class: "pill-column" }, pills);
   // Opened from a plan pill in the header: stands in for the left card.
   const plan = new PlanCard();
   let planTimer: number | null = null;
