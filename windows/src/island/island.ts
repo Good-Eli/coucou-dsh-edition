@@ -16,6 +16,7 @@ import {
 import { cornerRadius, growsUp } from "../core/corners";
 import { Sound } from "../core/sound";
 import { DSH_PILL_ID as DSH_ID, Dsh, routeFor, usageLine } from "../core/dsh";
+import { isDshSessionPill } from "./dsh";
 import { DSH_SESSION_PREFIX, chooseEffort, chooseModel } from "./dsh";
 import { State, compactIslandMode } from "../core/state";
 import { SPOTIFY_ID, Spotify, islandDances } from "../core/spotify";
@@ -1499,11 +1500,13 @@ export class Island {
     // badge (whats-new.ts). Anything Mochi has to say comes first.
     this.engine.setUpdateHint(this.updateHintOn() ? UPDATE_BLUE_RGB : null);
     // While a plan card is open Mochi wears the plan's colour, like its pill.
+    // A dialog's own pill does the same: the colour is the one thing that ties
+    // the big Mochi to the row on the right, and each dialog has its own.
     this.engine.bodyColor = planCardOpen()
       ? hexToRGB(openPlanColor())
       : this.engine.showsUpdateHint
         ? UPDATE_BLUE_RGB
-        : focus?.isIntegration
+        : focus?.isIntegration || (focus && isDshSessionPill(focus.id))
           ? hexToRGB(focus.color)
           : null;
     this.engine.particleOverhang = BOT_OVERHANG;

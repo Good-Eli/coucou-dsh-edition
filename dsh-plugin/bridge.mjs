@@ -39,7 +39,7 @@ export const PROTOCOL = 1;
  * this file in the entry's URL for exactly that reason; this number is what
  * makes the new code visible in `bridge.log` once it does load.
  */
-export const BUILD = 15;
+export const BUILD = 17;
 
 /**
  * Why this plugin does not decide its worth from the DSH version string.
@@ -515,6 +515,14 @@ export function apply(ctx, rawConfig) {
       // can ever appear. Saying which one is in force is the difference between
       // "the island is broken" and "DSH was told not to ask".
       approvalPolicy: approvalPolicyOf(ctx, agent),
+      // A subagent is a session DSH opened for itself while answering: it has a
+      // parent and no dialog of its own. The island must not give it a pill —
+      // those appear and vanish mid-turn and belong to the dialog that spawned
+      // them, not to the person watching.
+      origin: header.origin ?? null,
+      parentSession: header.parentSession ?? null,
+      delegationDepth: header.delegationDepth ?? null,
+      delegationDepth: header.delegationDepth ?? null,
     });
     send({ t: 'session.upsert', session: sessions.get(session.id) });
   };
@@ -1113,7 +1121,10 @@ export function apply(ctx, rawConfig) {
         const at = ours ? hook.indexOf(ours) : -1;
         if (at >= 0) hook.splice(at, 1);
       }
-      channel.stop();
+      // Returns a promise: the new instance must not start its host until this
+      // one's host is gone, or the pipe ends up with two servers and no client
+      // can tell which one it reached.
+      return channel.stop();
     },
   });
 }
@@ -1369,7 +1380,10 @@ function watchForNewerBuild({ ctx, config, log, stop }) {
       if (typeof next.apply !== 'function') throw new Error('the newer bridge exports no apply()');
       log('info', `reload: ${basename(newer)} is newer than ${mine}; handing over`);
       clearInterval(timer);
-      stop();
+      // The old host must be gone before the new one starts: two servers on one
+      // pipe name leaves a pipe that accepts nothing, and the island then shows
+      // "DSH is not connected" while the plugin reports itself healthy.
+      await stop();
       next.apply(ctx, config);
       log('info', `reload: now running ${basename(newer)}`);
     } catch (error) {

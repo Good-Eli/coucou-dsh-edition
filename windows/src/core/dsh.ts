@@ -57,6 +57,17 @@ export interface DshSession {
    * a raw `cd 'C:\LocalAI\…'` command does not.
    */
   say?: string | null;
+  /**
+   * `subagent` when DSH opened this session for itself while answering.
+   *
+   * A subagent has no dialog of its own: it starts and ends inside one turn, so
+   * a pill for it would appear and vanish for no reason a person can see.
+   */
+  origin?: string | null;
+  /** The dialog a subagent was spawned from, when DSH says. */
+  parentSession?: string | null;
+  /** How deep in the delegation tree this session sits: 0 or absent for a dialog. */
+  delegationDepth?: number | null;
 }
 
 /** Today's PlusVibeAPI spend, as the bridge read it from the provider. */
@@ -145,14 +156,142 @@ export function isLive(snapshot: DshSnapshot | null): boolean {
   return snapshot?.status === "ready" || snapshot?.status === "incompatible";
 }
 
+/**
+ * Whether DSH opened this session for itself: a subagent, not a dialog.
+ *
+ * A subagent starts and ends inside one turn of the dialog that spawned it, so
+ * it is not something the person opened and not something they can watch: the
+ * island counts it (in the idle summary) but never gives it a pill.
+ */
+export function isSubagent(session: DshSession | null | undefined): boolean {
+  if (!session) return false;
+  return (
+    session.origin === "subagent" ||
+    !!session.parentSession ||
+    (session.delegationDepth ?? 0) > 0
+  );
+}
+
+/** The dialogs a person opened: every session that is not a subagent. */
+export function dialogs(snapshot: DshSnapshot | null): DshSession[] {
+  if (!snapshot) return [];
+  return snapshot.sessions.filter((s) => !isSubagent(s));
+}
+
+/** Whether this dialog is doing something right now, or waiting for an answer. */
+export function isBusy(session: DshSession, snapshot: DshSnapshot | null): boolean {
+  const waiting = (snapshot?.pending ?? []).some((p) => p.sessionId === session.id);
+  if (waiting) return true;
+  return session.state === "working" || session.state === "thinking";
+}
+
+/** How urgent a dialog is: waiting for you beats working beats thinking. */
+function busyRank(session: DshSession, snapshot: DshSnapshot | null): number {
+  const waiting = (snapshot?.pending ?? []).some((p) => p.sessionId === session.id);
+  if (waiting) return 0;
+  return session.state === "working" ? 1 : 2;
+}
+
+/**
+ * The dialogs that are busy right now, the one that needs you first.
+ *
+ * This list is the whole of the pill rule: one pill per busy dialog, and none at
+ * all when it is empty — which is what "nothing is running" looks like.
+ */
+export function busyDialogs(snapshot: DshSnapshot | null): DshSession[] {
+  return dialogs(snapshot)
+    .filter((s) => isBusy(s, snapshot))
+    .sort((a, b) => busyRank(a, snapshot) - busyRank(b, snapshot));
+}
+
+/** What the island shows while no dialog is busy: the facts worth a glance. */
+export interface DshIdle {
+  /** Dialogs DSH has open (idle ones included): the person's own windows. */
+  dialogs: number;
+  /** Subagents running inside some dialog's turn, if any. */
+  subagents: number;
+  /** The dialog that spoke last, and what it said last. */
+  lastTitle: string | null;
+  lastLine: string | null;
+  lastState: string | null;
+  lastAt: number | null;
+  /** The model the next turn would run, from the last dialog that ran. */
+  model: string | null;
+}
+
+/**
+ * The idle summary: what to show when nothing is running.
+ *
+ * "Nothing is happening" is not useful on its own — the island is a glance, so
+ * the glance should answer what a person actually wants to know at rest: what
+ * ran last, how it ended, how many windows are open, and what today has cost.
+ * The spend is read from `Dsh.snapshot.usage`, which the bridge refreshes itself.
+ */
+export function idleSummary(snapshot: DshSnapshot | null): DshIdle | null {
+  if (!snapshot || !isLive(snapshot)) return null;
+  const own = dialogs(snapshot);
+  const running = snapshot.sessions.filter((s) => isSubagent(s) && isBusy(s, snapshot)).length;
+  // The most recent thing that actually ran: a dialog with a state and a time.
+  const ran = own
+    .filter((s) => (s.since ?? 0) > 0 && s.state && s.state !== "idle")
+    .sort((a, b) => (b.since ?? 0) - (a.since ?? 0));
+  const last = ran[0] ?? null;
+  return {
+    dialogs: own.length,
+    subagents: running,
+    lastTitle: last ? sessionHeading(last) : null,
+    lastLine: last?.say?.trim() || last?.steps?.at(-1)?.trim() || null,
+    lastState: last?.state ?? null,
+    lastAt: last?.since ?? null,
+    model: modelLabel(last, snapshot.catalog),
+  };
+}
+
 /** The session the island is looking at: the chosen one, else the busiest. */
 export function activeSession(snapshot: DshSnapshot | null): DshSession | null {
-  if (!snapshot || snapshot.sessions.length === 0) return null;
-  const chosen = snapshot.sessions.find((s) => s.id === snapshot.activeSession);
+  const own = dialogs(snapshot);
+  if (own.length === 0) return null;
+  const chosen = own.find((s) => s.id === snapshot?.activeSession);
   if (chosen) return chosen;
   const rank = (state: string | null | undefined) =>
     state === "working" ? 0 : state === "thinking" ? 1 : state === "error" ? 2 : 3;
-  return [...snapshot.sessions].sort((a, b) => rank(a.state) - rank(b.state))[0];
+  return [...own].sort((a, b) => rank(a.state) - rank(b.state))[0];
+}
+
+/**
+ * The colours a dialog's Mochi may wear.
+ *
+ * Chosen to be told apart on the dark card and from each other: eight tones that
+ * stay readable as a 24-pixel body, a name beside it, and a 58-pixel Mochi in
+ * the card. None of them is the tool's own blue, so the overview pill is never
+ * mistaken for a dialog.
+ */
+const SESSION_COLORS = [
+  "#4C8DFF",
+  "#2DD4BF",
+  "#A78BFA",
+  "#F59E0B",
+  "#4ADE80",
+  "#F472B6",
+  "#38BDF8",
+  "#FB7185",
+];
+
+/**
+ * The colour of one dialog, derived from its id.
+ *
+ * Derived, not assigned at random: a dialog must keep its colour across a
+ * restart, or the person who learned "the teal one is the build fix" has to
+ * learn the list again every morning. A hash is not a guarantee of uniqueness —
+ * two dialogs can share a tone — but it is stable, which is what matters.
+ */
+export function sessionColor(sessionId: string | null | undefined): string {
+  if (!sessionId) return SESSION_COLORS[0];
+  let hash = 0;
+  for (let i = 0; i < sessionId.length; i += 1) {
+    hash = (Math.imul(hash, 31) + sessionId.charCodeAt(i)) | 0;
+  }
+  return SESSION_COLORS[Math.abs(hash) % SESSION_COLORS.length];
 }
 
 /** The session a pending approval belongs to, for the card's title. */

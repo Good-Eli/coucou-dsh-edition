@@ -437,6 +437,43 @@ test('an event for a session the plugin never saw still reaches the island', asy
   );
 });
 
+test('a subagent is published with the marks that tell it apart from a dialog', async () => {
+  // DSH opens a session for itself when it delegates. The island must be able to
+  // tell that session from one a person opened: a pill for a subagent would
+  // appear and vanish inside one turn, for no reason the person can see.
+  const sub = {
+    session: {
+      id: 'session-sub',
+      header: { cwd: 'C:/work', origin: 'subagent', parentSession: 'session-parent', delegationDepth: 1 },
+    },
+  };
+  const bridge = startBridge({ agents: { list: () => [sub], get: () => sub } });
+  handshake(bridge);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const frames = bridge.channel.outgoing.join('').trim().split('\n').map((line) => JSON.parse(line));
+  const ready = frames.find((f) => f.t === 'ready');
+  const published = ready.sessions.find((s) => s.id === 'session-sub');
+  assert.ok(published, 'the subagent is published like any session');
+  assert.equal(published.origin, 'subagent', 'and says what it is');
+  assert.equal(published.parentSession, 'session-parent', 'and which dialog spawned it');
+  assert.equal(published.delegationDepth, 1);
+});
+
+test('a dialog is published with no subagent marks', async () => {
+  const own = { session: { id: 'session-own', header: { cwd: 'C:/work' } } };
+  const bridge = startBridge({ agents: { list: () => [own], get: () => own } });
+  handshake(bridge);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const frames = bridge.channel.outgoing.join('').trim().split('\n').map((line) => JSON.parse(line));
+  const ready = frames.find((f) => f.t === 'ready');
+  const published = ready.sessions.find((s) => s.id === 'session-own');
+  assert.ok(published, 'the dialog is published');
+  assert.equal(published.origin, null, 'a dialog has no origin');
+  assert.equal(published.parentSession, null, 'and no parent');
+});
+
 test('ready reports the security and compatibility state', async () => {
   const bridge = startBridge();
   handshake(bridge);

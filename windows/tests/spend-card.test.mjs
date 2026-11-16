@@ -11,7 +11,7 @@ import { installFakeDom } from "./fakedom.mjs";
 
 installFakeDom();
 
-const { buildSpend } = await import("../src/views/spend.ts");
+const { buildSpend, averagePerDay } = await import("../src/views/spend.ts");
 const { Spend } = await import("../src/island/dsh.ts");
 const { setLanguage } = await import("../src/i18n/i18n.ts");
 
@@ -65,16 +65,26 @@ test("the card shows the provider's roubles, tokens and requests", () => {
   assert.match(shown, /40/, "today's requests");
 });
 
-test("switching the period shows that period's figures", () => {
+test("all three periods are on one page, with no switching", () => {
   Spend.stats = stats;
   const view = card();
-  Spend.period = "month";
-  view.sync();
   const shown = texts(view.el).join(" | ");
-  assert.match(shown, /955,00 ₽/, "the month's roubles");
-  assert.match(shown, /90M/, "the month's tokens");
-  assert.match(shown, /3[,\s]?000/, "the month's requests");
-  assert.match(shown, /2026-11-01/, "and the day the window starts");
+  // One page: today, the week and the month are all there at once. Switching
+  // between them would hide two thirds of the answer, which is the opposite of
+  // what a glance is for.
+  assert.match(shown, /12,50 ₽/, "today");
+  assert.match(shown, /95,50 ₽/, "the week");
+  assert.match(shown, /955,00 ₽/, "the month");
+  const buttons = [];
+  const walk = (node) => {
+    for (const child of node.childNodes ?? []) {
+      if (child.tagName === "BUTTON") buttons.push(child);
+      walk(child);
+    }
+  };
+  walk(view.el);
+  const labels = buttons.map((b) => b.textContent.trim());
+  assert.deepEqual(labels, ["Refresh"], `only Refresh is a button, saw: ${labels.join(", ")}`);
 });
 
 test("while the figures are on their way, the card says so and shows no zero", () => {
@@ -100,24 +110,57 @@ test("the card names its source, so a figure can be checked", () => {
   assert.match(shown, /PlusVibeAPI's own records/);
 });
 
-test("a period tab switches what the card shows", () => {
+test("a figure is labelled, never declined: the number does not bend the noun", () => {
   Spend.stats = stats;
   const view = card();
-  const buttons = [];
-  const walk = (node) => {
-    for (const child of node.childNodes ?? []) {
-      if (child.tagName === "BUTTON") buttons.push(child);
-      walk(child);
-    }
+  const shown = texts(view.el).join(" | ");
+  // "291,9M токены" is wrong Russian; "Токены 291,9M" is right for every number
+  // and every language. The label comes from the dictionary, the figure after it.
+  assert.match(shown, /Tokens \| 1,2M/, "the label, then the figure");
+  assert.match(shown, /Requests \| 40/, "the same for requests");
+  assert.doesNotMatch(shown, /1,2M tokens/i, "the noun is not glued to the number");
+});
+
+test("the window is a date a person reads, not an ISO string", () => {
+  Spend.stats = { ...stats, since: { day: "2026-11-16", week: "2026-11-10", month: "2026-11-01" } };
+  const view = card();
+  const shown = texts(view.el).join(" | ");
+  assert.doesNotMatch(shown, /2026-11-16/, "no raw day key on the card");
+  assert.match(shown, /Nov 16|16 Nov|16\.11/, `a formatted date, saw: ${shown}`);
+});
+
+test("the month is also said per day, so a figure can be judged", () => {
+  Spend.stats = stats;
+  const view = card();
+  const shown = texts(view.el).join(" | ");
+  // The three totals say what was spent; the average says whether that is a lot.
+  assert.match(shown, /Average per day: \d+,\d\d ₽/, `saw: ${shown}`);
+});
+
+test("the average divides the month by the days it covers", () => {
+  // Fixed dates, so the figure is the same on every run: 330 ₽ over the 1st to
+  // the 11th of November is 30 ₽ a day — eleven days, both ends counted.
+  const fixed = {
+    ...stats,
+    month: { tokens: 1, rub: 330, requests: 1 },
+    since: { day: "2026-11-11", week: "2026-11-05", month: "2026-11-01" },
   };
-  walk(view.el);
-  // A button's label is its own text content, not an attribute.
-  const month = buttons.find((b) => b.textContent.trim() === "Month");
-  assert.ok(month, `the card offers the month, saw: ${buttons.map((b) => b.textContent).join(", ")}`);
-  month.fire("click");
-  assert.equal(Spend.period, "month", "clicking the tab changes the period");
-  view.sync();
-  assert.match(texts(view.el).join(" | "), /955,00 ₽/, "and the card follows");
+  assert.equal(averagePerDay(fixed, new Date("2026-11-11T12:00:00")), 30);
+  // A window that has only just opened divides by one, not by zero.
+  assert.equal(
+    averagePerDay({ ...fixed, since: { ...fixed.since, month: "2026-11-11" } }, new Date("2026-11-11T12:00:00")),
+    330,
+  );
+});
+
+test("no average is invented for a month with no spend", () => {
+  Spend.stats = {
+    ...stats,
+    month: { tokens: 0, rub: 0, requests: 0 },
+  };
+  const view = card();
+  const shown = texts(view.el).join(" | ");
+  assert.doesNotMatch(shown, /Average per day/, "a zero average would be a claim nobody made");
 });
 
 test("opening the card is what asks for the figures", async () => {

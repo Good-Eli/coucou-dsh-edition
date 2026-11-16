@@ -14,11 +14,15 @@ import {
   activeSession,
   appliesToNextRequest,
   approvalCard,
+  busyDialogs,
+  idleSummary,
+  isSubagent,
   isKnownEffort,
   isKnownModel,
   islandState,
   isLive,
   modelLabel,
+  sessionColor,
   sessionFor,
   sessionHeading,
   type DshSnapshot,
@@ -26,7 +30,7 @@ import {
 } from "../core/dsh";
 import { pillDefinition } from "../core/pills";
 import { Sound } from "../core/sound";
-import { State } from "../core/state";
+import { State, type AgentTask } from "../core/state";
 import { dropPendingCard, surfaceAlert } from "./hooks";
 import type { Island } from "./island";
 // ── Model and effort switching ───────────────────────────────────────────────
@@ -292,6 +296,10 @@ function noteSessionStates(previous: DshSnapshot | null, next: DshSnapshot) {
 
   let alerted = false;
   for (const session of next.sessions) {
+    // A subagent ends a turn every time its parent asks it something. Sounding
+    // the island and opening it for that would make the island chime all through
+    // one answer, for work nobody opened a window for.
+    if (isSubagent(session)) continue;
     const was = previous.sessions.find((s) => s.id === session.id)?.state ?? null;
     const now = session.state ?? null;
     if (!was || was === now) continue;
@@ -302,14 +310,19 @@ function noteSessionStates(previous: DshSnapshot | null, next: DshSnapshot) {
       // open and close the island several times over.
       const shown =
         !alerted && surfaceAlert(island, DSH_PILL_ID, now === "error" ? "error" : "finished");
+      // The badge sits on the dialog's own pill while it still has one — a turn
+      // that ended leaves the pill at once, so in practice this is the tool's
+      // resting pill, which is where "the last thing that ran" belongs.
+      const own = State.tasks.find((t) => t.sessionId === session.id);
       if (shown) alerted = true;
-      else State.setPillBadge(DSH_PILL_ID, now === "error" ? "error" : "finished");
+      else State.setPillBadge(own?.id ?? DSH_PILL_ID, now === "error" ? "error" : "finished");
       void Bridge.log(
         `dsh: ${session.id} → ${now} (${shown ? "island alerted" : "badge only"})`,
       );
     } else if (now === "thinking" || now === "working") {
       // A turn started: whatever the last one left behind is stale.
       State.setPillBadge(DSH_PILL_ID, null);
+      State.setPillBadge(dshSessionPillId(session.id), null);
       if (State.mode === "hidden") island.reveal();
     }
   }
@@ -352,97 +365,148 @@ export function logPills(tasks: readonly { id: string; name: string }[] = State.
   void Bridge.log(`pills: ${line || "(none)"}`);
 }
 
+/**
+ * Keeps the island's pills in step with what DSH is doing.
+ *
+ * Two rules, and they are the whole of it:
+ *
+ * 1. **The tool's pill is always there and never changes its name.** It is
+ *    "DeepSeek Harness", it is where DSH lives in the list, and its card is the
+ *    overview: resting when nothing runs, and who is working when something
+ *    does. It used to be renamed after whichever dialog was busiest, which is
+ *    exactly what made the list unreadable — a pill called "DeepSeek Harness"
+ *    would suddenly be called "Починить одобрения" and then change back.
+ *
+ * 2. **Every busy dialog gets its own pill, named after the dialog.** Busy is
+ *    working, thinking, or waiting for an answer. One dialog, one pill; three
+ *    dialogs, three pills; nothing running, no dialog pills at all.
+ *
+ * That is what makes the list predictable: a dialog's pill appears when its turn
+ * starts and goes away when it ends, and the number of them is exactly the
+ * number of dialogs that are running.
+ *
+ * Subagents never get a pill. DSH opens them for itself inside one turn, they
+ * have no dialog of their own, and a pill that appears and vanishes mid-answer
+ * is exactly the "unexplainable logic" this replaces. The overview counts them.
+ */
 export function syncTask() {
   const snapshot = Dsh.snapshot;
   logPills();
   const definition = pillDefinition(DSH_PILL_ID);
 
   if (!isLive(snapshot)) {
-    // No bridge, no dialogs: every session pill goes with it.
-    for (let i = State.tasks.length - 1; i >= 0; i -= 1) {
-      if (State.tasks[i].id.startsWith(DSH_SESSION_PREFIX)) State.tasks.splice(i, 1);
-    }
+    // No bridge, no dialogs: every dialog pill goes with it.
+    clearSessionPills(new Set());
     // Recomputed after the removals above: a splice shifts what came after it.
     const gone = State.tasks.findIndex((task) => task.id === DSH_PILL_ID);
     if (gone < 0) return;
     // The pill exists only while DSH is live — unless it is the main tool, which
     // is always on and must not disappear when the bridge is down.
     if (State.isKept(DSH_PILL_ID)) {
-      const kept = State.tasks[gone];
-      kept.state = "idle";
-      kept.steps = [];
-      kept.stepIndex = 0;
-      kept.stepSeq = 0;
-      kept.finalLine = null;
-      kept.modelLine = null;
-      kept.sayLine = null;
-      kept.pillBadge = null;
-      kept.sessionId = null;
+      restPill(State.tasks[gone], definition, null);
       return;
     }
     State.tasks.splice(gone, 1);
     return;
   }
 
-  const index = State.tasks.findIndex((task) => task.id === DSH_PILL_ID);
-
-  const session = activeSession(snapshot);
-  const label = modelLabel(session, snapshot?.catalog);
-  const state = islandState(session);
-  // The steps are the host's own: what the agent actually did. The session's
-  // title used to be appended here as a "step" on every event, which is why the
-  // card showed the same line twice and counted 12 of them.
-  const steps = session?.steps ?? [];
-  const stepSeq = session?.stepSeq ?? steps.length;
-  // A finished turn holds its last action still, the way a hook pill holds the
-  // agent's final message; a running one keeps the shimmer.
-  const over = state === "finished" || state === "error";
-  const finalLine = over ? (steps.at(-1) ?? label) : null;
-  // What the agent says it is doing, in its own words. This is the card's
-  // "now" line: a sentence beats `cd 'C:\LocalAI\…'` every time.
-  const said = session?.say?.trim() || null;
-  const badge = snapshot && snapshot.approvalsEnabled && snapshot.pending.length > 0 ? "approval" : null;
-
+  // The tool's own pill: always present, always the same name, always the
+  // overview of everything DSH is doing.
+  let index = State.tasks.findIndex((task) => task.id === DSH_PILL_ID);
   if (index < 0) {
     State.tasks.push({
       id: DSH_PILL_ID,
       name: definition?.name ?? "DeepSeek Harness",
       color: definition?.color ?? "#4C8DFF",
-      state,
-      stepIndex: Math.max(0, steps.length - 1),
-      steps: [...steps],
-      stepSeq,
+      state: "idle",
+      stepIndex: 0,
+      steps: [],
       source: "agent",
       isIntegration: false,
-      sessionCwd: session?.cwd ?? null,
-      sessionId: session?.id ?? null,
-      finalLine,
-      modelLine: label,
-      sayLine: said,
-      pillBadge: badge,
+      idle: true,
     });
-    syncSessionPills(snapshot, session);
-    return;
+    index = State.tasks.length - 1;
   }
+  restPill(State.tasks[index], definition, snapshot);
 
-  const task = State.tasks[index];
-  task.state = state;
-  task.sessionCwd = session?.cwd ?? null;
-  task.sessionId = session?.id ?? null;
-  task.finalLine = finalLine;
-  task.modelLine = label;
-  task.sayLine = said;
-  task.pillBadge = badge;
-  // Replaced, never appended: the host re-sends the whole turn's steps, so
-  // appending would grow the list on every frame.
-  task.steps = [...steps];
-  task.stepIndex = Math.max(0, steps.length - 1);
-  task.stepSeq = stepSeq;
-
-  syncSessionPills(snapshot, session);
+  syncSessionPills(snapshot, busyDialogs(snapshot));
 }
 
-// ── One pill per open dialog ─────────────────────────────────────────────────
+/** The fields one busy dialog gives a pill. */
+function dialogFields(session: ReturnType<typeof activeSession>, snapshot: DshSnapshot | null) {
+  const definition = pillDefinition(DSH_PILL_ID);
+  const steps = session?.steps ?? [];
+  const state = islandState(session);
+  const waiting = (snapshot?.pending ?? []).some((p) => p.sessionId === session?.id);
+  return {
+    // The dialog's own title names the pill: "Проект: Coucou DSH Edition" says
+    // which dialog this is, "DeepSeek Harness" twice over does not. The title is
+    // kept whole: how much of it fits is the pill's business, not the model's.
+    name: sessionName(session) || (definition?.name ?? "DeepSeek Harness"),
+    // Each dialog wears its own colour, derived from its id: two running dialogs
+    // must be told apart at a glance, and the Mochi beside the name is the one
+    // place the list has room for colour.
+    color: sessionColor(session?.id),
+    state,
+    steps: [...steps],
+    stepIndex: Math.max(0, steps.length - 1),
+    stepSeq: session?.stepSeq ?? steps.length,
+    sessionCwd: session?.cwd ?? null,
+    sessionId: session?.id ?? null,
+    // A running turn keeps its shimmer; the sentence is the card's "now" line.
+    finalLine: null,
+    modelLine: modelLabel(session, snapshot?.catalog),
+    sayLine: session?.say?.trim() || null,
+    pillBadge: waiting ? ("approval" as const) : null,
+    idle: false,
+  };
+}
+
+/** What the resting pill shows: the tool, and the model the next turn would run. */
+function idleFields(snapshot: DshSnapshot | null) {
+  const summary = idleSummary(snapshot);
+  // The dialog that ran last says what will run next; with nothing run yet, the
+  // session the island would show if something did.
+  const model = summary?.model ?? modelLabel(activeSession(snapshot), snapshot?.catalog);
+  return {
+    finalLine: null,
+    modelLine: model,
+    sayLine: null,
+    sessionId: null,
+    sessionCwd: null,
+    pillBadge: null,
+    stepSeq: 0,
+  };
+}
+
+/** Puts the tool's own pill to rest: no session, no steps, no badge of its own. */
+function restPill(
+  task: AgentTask,
+  definition: ReturnType<typeof pillDefinition>,
+  snapshot: DshSnapshot | null = null,
+) {
+  const busy = busyDialogs(snapshot);
+  task.name = definition?.name ?? "DeepSeek Harness";
+  task.color = definition?.color ?? "#4C8DFF";
+  // The pill keeps the overview: at rest it is "idle", with work in flight it
+  // shimmers like any other running pill. Its name never changes.
+  task.state = busy.length > 0 ? "working" : "idle";
+  task.steps = [];
+  task.stepIndex = 0;
+  task.stepSeq = 0;
+  task.finalLine = null;
+  task.idle = busy.length === 0;
+  task.sessionId = null;
+  task.sessionCwd = null;
+  const fields = idleFields(snapshot);
+  task.modelLine = fields.modelLine;
+  task.sayLine = null;
+  // The badge is left alone on purpose: a turn that just ended sets it right
+  // after this (see noteSessionStates), and clearing it here would make it
+  // flicker away on the next unrelated snapshot.
+}
+
+// ── One pill per busy dialog ─────────────────────────────────────────────────
 
 /** The prefix of a pill that stands for one dialog rather than for the tool. */
 export const DSH_SESSION_PREFIX = "dsh:session:";
@@ -458,83 +522,39 @@ export function isDshPill(id: string): boolean {
 }
 
 /**
- * How long a dialog that stopped working keeps its own pill.
+ * Whether a pill id stands for one dialog rather than for the tool.
  *
- * A dialog that finished ten minutes ago is no longer "active", and the list on
- * the right is four slots wide: keeping it would push out something live.
+ * The big Mochi wears a dialog's colour, so it needs to know the difference: the
+ * tool's own pill is not a dialog and has no colour of its own to wear.
  */
-const SESSION_PILL_LINGER_MS = 10 * 60_000;
+export function isDshSessionPill(id: string): boolean {
+  return id.startsWith(DSH_SESSION_PREFIX);
+}
 
-/** At most this many dialog pills at once, so the right-hand list stays readable. */
-const MAX_SESSION_PILLS = 3;
-
-/**
- * Gives every open DSH dialog its own pill, and takes the pill away again.
- *
- * The tool's own pill is the focused dialog (see `syncTask`); these are the
- * others. A pill closes when its dialog closes, when it has been quiet for
- * `SESSION_PILL_LINGER_MS`, or when a live dialog needs the slot — but never
- * while that dialog is waiting for an answer, because a card nobody can see is
- * the one thing worse than no card.
- */
-export function syncSessionPills(snapshot: DshSnapshot | null, active: ReturnType<typeof activeSession>) {
-  const live = isLive(snapshot) ? (snapshot?.sessions ?? []) : [];
-  const others = live.filter((s) => s.id !== active?.id);
-  const now = Date.now();
-
-  /** A dialog is worth a pill while it works, or shortly after it stopped. */
-  const worthShowing = (session: (typeof others)[number]): boolean => {
-    const waiting = (snapshot?.pending ?? []).some((p) => p.sessionId === session.id);
-    if (waiting) return true;
-    const state = session.state ?? "idle";
-    if (state === "working" || state === "thinking") return true;
-    if (state === "finished" || state === "error") {
-      const since = session.since ?? 0;
-      return since > 0 && now - since < SESSION_PILL_LINGER_MS;
-    }
-    // Never started a turn, or its state is unknown: no pill to explain.
-    return false;
-  };
-
-  const wanted = others
-    .filter(worthShowing)
-    .sort((a, b) => rankSession(a) - rankSession(b))
-    .slice(0, MAX_SESSION_PILLS);
-
-  const keep = new Set(wanted.map((s) => dshSessionPillId(s.id)));
-
-  // Drop the pills whose dialog closed, or stopped being worth one.
+/** Drops every dialog pill that is not in `keep`. */
+function clearSessionPills(keep: Set<string>) {
   for (let i = State.tasks.length - 1; i >= 0; i -= 1) {
     const id = State.tasks[i].id;
     if (id.startsWith(DSH_SESSION_PREFIX) && !keep.has(id)) State.tasks.splice(i, 1);
   }
+}
 
-  for (const session of wanted) {
+/**
+ * Gives each busy dialog its own pill.
+ *
+ * No linger, no timer, no "worth showing" heuristics and no cap: `busyDialogs`
+ * is the whole rule, so a pill is here exactly while its dialog is running or
+ * waiting. The count is the number of dialogs at work, which is what makes the
+ * list predictable.
+ */
+export function syncSessionPills(snapshot: DshSnapshot | null, busy: ReturnType<typeof busyDialogs>) {
+  const keep = new Set(busy.map((s) => dshSessionPillId(s.id)));
+  clearSessionPills(keep);
+
+  for (const session of busy) {
     const id = dshSessionPillId(session.id);
-    const definition = pillDefinition(DSH_PILL_ID);
-    const steps = session.steps ?? [];
-    const state = islandState(session);
-    const over = state === "finished" || state === "error";
-    const said = session.say?.trim() || null;
-    const waiting = (snapshot?.pending ?? []).some((p) => p.sessionId === session.id);
+    const fields = { ...dialogFields(session, snapshot), isDshSession: true };
     const existing = State.tasks.find((t) => t.id === id);
-    const fields = {
-      // The dialog's own title names the pill: "Проект: Coucou DSH Edition" says
-      // which dialog this is, "DeepSeek Harness" four times over does not.
-      name: shortHeading(session) || (definition?.name ?? "DeepSeek Harness"),
-      color: definition?.color ?? "#4C8DFF",
-      state,
-      steps: [...steps],
-      stepIndex: Math.max(0, steps.length - 1),
-      stepSeq: session.stepSeq ?? steps.length,
-      sessionCwd: session.cwd ?? null,
-      sessionId: session.id,
-      finalLine: over ? (steps.at(-1) ?? null) : null,
-      modelLine: modelLabel(session, snapshot?.catalog),
-      sayLine: said,
-      pillBadge: waiting ? ("approval" as const) : null,
-      isDshSession: true,
-    };
     if (existing) Object.assign(existing, fields);
     else {
       State.tasks.push({
@@ -547,23 +567,22 @@ export function syncSessionPills(snapshot: DshSnapshot | null, active: ReturnTyp
   }
 }
 
-/** Working dialogs first, so a slot goes to the one that is doing something. */
-function rankSession(session: { state?: string | null }): number {
-  switch (session.state) {
-    case "working":
-      return 0;
-    case "thinking":
-      return 1;
-    case "error":
-      return 2;
-    default:
-      return 3;
-  }
+/**
+ * The name a pill and the overview use for one dialog: its title, whole.
+ *
+ * It used to be cut to 24 characters here, which is why a pill showed
+ * "Починить запросы одобре…" even when there was room for more: the ellipsis was
+ * added before any layout ran, so the pill could never use the space it had.
+ * Cutting is now CSS's job — `text-overflow` knows the real width, and it does
+ * not run when there is nothing to cut.
+ */
+export function sessionName(session: { title?: string | null; cwd?: string } | null): string {
+  return sessionHeading(session as never) || "";
 }
 
-/** A pill label has room for about 20 characters before it is cut. */
-function shortHeading(session: { title?: string | null; cwd?: string }): string {
-  const raw = sessionHeading(session as never) || "";
+/** Kept for the callers that want the old, cut name; unused by pills now. */
+export function shortHeading(session: { title?: string | null; cwd?: string } | null): string {
+  const raw = sessionName(session);
   return raw.length > 24 ? `${raw.slice(0, 23)}…` : raw;
 }
 

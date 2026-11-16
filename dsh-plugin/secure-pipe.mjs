@@ -172,7 +172,16 @@ export class SecurePipe {
     this.#child?.send?.({ t: 'kick' });
   }
 
-  /** Stops the host for good. */
+  /**
+   * Stops the host for good, and resolves once it is really gone.
+   *
+   * The wait matters for a handover: two hosts on one pipe name is not a
+   * conflict Windows reports, it is two servers where one is expected. The
+   * older one then dies holding the instance a client had just connected to,
+   * and the pipe stays up but answers nothing — the bridge looks healthy and
+   * the island stays empty. A caller that starts a replacement host must
+   * therefore wait for this promise.
+   */
   stop() {
     const child = this.#child;
     this.#child = null;
@@ -182,7 +191,15 @@ export class SecurePipe {
       clearTimeout(this.#retry);
       this.#retry = null;
     }
-    if (!child) return;
+    if (!child) return Promise.resolve();
+    const gone = new Promise((resolve) => {
+      if (child.exitCode != null || child.signalCode != null) return resolve();
+      child.once('exit', () => resolve());
+      // A host that will not die must not hang the handover: the process is
+      // about to be replaced either way, and 3 s is longer than the kill below.
+      const give = setTimeout(resolve, 3000);
+      give.unref?.();
+    });
     try {
       child.send?.({ t: 'stop' });
     } catch {
@@ -195,5 +212,6 @@ export class SecurePipe {
         /* already gone */
       }
     }, 500).unref?.();
+    return gone;
   }
 }

@@ -40,7 +40,7 @@ test('a source checkout never tries to swap itself', () => {
 test('the newer module is imported and validated before the old one stops', () => {
   const block = source.slice(source.indexOf('async () => {'));
   const importAt = block.indexOf('await import(');
-  const stopAt = block.indexOf('      stop();');
+  const stopAt = block.indexOf('await stop();');
   assert.ok(importAt >= 0, 'the newer file is imported');
   assert.ok(stopAt >= 0, 'the old instance stops');
   assert.ok(importAt < stopAt, 'a broken file must not leave the host with no bridge');

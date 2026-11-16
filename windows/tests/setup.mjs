@@ -29,4 +29,8 @@ registerHooks({
 
 // The island reaches timers and Tauri through `window`.
 globalThis.window = globalThis;
+// Views attach window listeners (Escape, resizes). A view test drives `sync()`
+// by hand, so registering one has to be harmless rather than an error.
+if (typeof globalThis.addEventListener !== "function") globalThis.addEventListener = () => {};
+if (typeof globalThis.removeEventListener !== "function") globalThis.removeEventListener = () => {};
 globalThis.__TAURI_INTERNALS__ = internals;

@@ -532,6 +532,34 @@ body {
   flex: 1 1 auto;
 }
 
+/*
+ * The overview's two columns follow the work rather than a fixed split.
+ *
+ * A fixed 322-pixel left card left a wide empty strip whenever fewer than two
+ * pills were running — which is most of the time. Three layouts instead:
+ *
+ *   .wide      nothing to list: the column is gone and the card has it all
+ *   .one-col   two or three pills: one column, wide enough for a whole title
+ *   .two-col   four or more: two columns of three, the card back to 322
+ */
+.overview.wide > .right {
+  display: none;
+}
+
+.overview.wide > .left {
+  flex: 1 1 auto;
+  width: auto;
+}
+
+.overview.one-col > .left {
+  flex: 0 0 268px;
+  width: 268px;
+}
+
+.overview.one-col .pills {
+  grid-template-columns: 1fr;
+}
+
 .card-body {
   position: relative;
   z-index: 1;
@@ -822,16 +850,27 @@ body {
   height: 100%;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  grid-auto-rows: 28px;
+  grid-auto-rows: 36px;
   gap: 4px;
   align-content: center;
   padding: 0 8px;
+  min-width: 0;
 }
 
+/*
+ * A pill is two lines tall so a dialog's title has somewhere to go.
+ *
+ * The label used to be one line, centred, and cut by the model at 24 characters
+ * before the layout ever ran: "Починить запросы одобре…" was all a 190-pixel pill
+ * could ever say. Two lines at 36 pixels, left-aligned beside the Mochi, with the
+ * cut done by `-webkit-line-clamp` (which knows the real width), roughly doubles
+ * what fits — and in the one-column layout it fits the whole title.
+ */
 .pill {
   position: relative;
-  height: 28px;
-  border-radius: 999px;
+  height: 36px;
+  min-width: 0;
+  border-radius: 14px;
   background: var(--card-flat);
   border: 1px solid rgba(255, 255, 255, 0.14);
   display: flex;
@@ -842,21 +881,31 @@ body {
 }
 
 .pill .mini {
-  margin-left: 7px;
+  margin-left: 8px;
 }
 
 .pill .lbl {
-  position: absolute;
-  left: 0;
-  right: 0;
-  text-align: center;
-  font: 600 10px var(--font);
-  color: var(--dim-3);
-  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0 10px 0 5px;
+  text-align: left;
+  font: 600 10.5px/1.25 var(--font);
+  color: var(--dim-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  padding: 0 8px 0 34px;
+  word-break: break-word;
   pointer-events: none;
+}
+
+/* The "and N more" cell has no Mochi: it is a count, not a session. */
+.pill.pill-more {
+  justify-content: center;
+  background: transparent;
+  border-style: dashed;
+  color: var(--dim-3);
+  font: 600 10.5px var(--font);
 }
 
 .pill:hover {
@@ -3838,6 +3887,7 @@ body.place-bottom-right #island,
 body.place-taskbar-right #island { transform-origin: right bottom; }
 body.place-top-left #island { transform-origin: left top; }
 body.place-top-right #island { transform-origin: right top; }
+
 /* ── The card's "now" line ───────────────────────────────────────────────── */
 
 /*
@@ -3868,39 +3918,59 @@ body.place-top-right #island { transform-origin: right top; }
   opacity: 1;
 }
 
+/* ── DeepSeek Harness at rest ────────────────────────────────────────────── */
+
+/*
+ * The card while nothing is running. There is no ticker to animate, so the
+ * space goes to what a glance is for: what ran last, how much is open, what
+ * today has cost. Same left inset as the ticker card, so the two read as one.
+ */
+.card-body.dsh-idle {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 14px 0 108px;
+  min-width: 0;
+}
+
+.idle-head {
+  font: 600 9px var(--font);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--dim-3);
+  margin-top: 3px;
+}
+
+.idle-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.idle-line {
+  font: 500 11px var(--font);
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.idle-line.quiet {
+  font-weight: 400;
+  color: var(--dim-2);
+}
+
 /* ── The spend card (views/spend.ts) ─────────────────────────────────────── */
 
 .spend-stack {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  height: 100%;
-  padding: 10px 16px 12px;
-  overflow: hidden;
-}
-
-.spend-tabs {
-  display: flex;
   gap: 6px;
-  flex: none;
-}
-
-.spend-tab {
-  padding: 4px 12px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(232, 233, 236, 0.72);
-  font: 600 11px var(--font);
-  cursor: pointer;
-}
-
-.spend-tab:hover { background: rgba(255, 255, 255, 0.12); }
-
-.spend-tab.on {
-  border-color: rgba(76, 141, 255, 0.85);
-  background: rgba(76, 141, 255, 0.18);
-  color: #eef2ff;
+  height: 100%;
+  padding: 10px 16px 10px;
+  overflow: hidden;
 }
 
 .spend-body {
@@ -3909,44 +3979,96 @@ body.place-top-right #island { transform-origin: right top; }
   display: flex;
   flex-direction: column;
   gap: 4px;
-  justify-content: center;
+  /* The figures sit at the top and the foot at the bottom. Centring them left a
+     band of empty card above and below the numbers, which is what read as "too
+     much free space". */
+  justify-content: flex-start;
 }
 
-.spend-figures {
-  display: flex;
-  align-items: flex-end;
-  gap: 18px;
+/*
+ * Three periods side by side: one page, no tabs.
+ *
+ * The roubles lead in every column — that is the question — and the tokens and
+ * requests sit under them one size down, so a row can be read left to right
+ * across the same period without moving the eye up and down.
+ */
+.spend-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  align-items: start;
 }
 
-.spend-figure {
+.spend-col {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
+  min-width: 0;
+  padding-left: 10px;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.spend-col:first-child {
+  padding-left: 0;
+  border-left: none;
+}
+
+.spend-col-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   min-width: 0;
 }
 
-.spend-figure .v {
-  font: 600 15px var(--font);
-  font-variant-numeric: tabular-nums;
-  color: var(--ink);
-  white-space: nowrap;
-}
-
-/* The roubles are what the person came for: they get the largest type. */
-.spend-figure.big .v {
-  font-size: 24px;
-  letter-spacing: -0.01em;
-}
-
-.spend-figure .c {
-  font: 400 10px var(--font);
+.spend-col-name {
+  font: 600 10.5px var(--font);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
   color: var(--dim-2);
   white-space: nowrap;
 }
 
-.spend-since {
-  font: 400 10.5px var(--font);
+.spend-col-since {
+  font: 400 9.5px var(--font);
   color: var(--dim-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spend-col-main {
+  font: 600 19px var(--font);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * The two smaller figures as label/value pairs, not as a declined phrase:
+ * "Токены 291,9M" holds for one token and for a million in every language.
+ */
+.spend-col-sub {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 6px;
+  row-gap: 1px;
+  font: 400 10px var(--font);
+  color: var(--dim-2);
+  white-space: nowrap;
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.spend-col-sub .k {
+  color: var(--dim-3);
+}
+
+.spend-col-sub .v {
+  font-variant-numeric: tabular-nums;
+  color: var(--dim-2);
 }
 
 .spend-note {
@@ -3983,3 +4105,31 @@ body.place-top-right #island { transform-origin: right top; }
 }
 
 .spend-again:hover { background: rgba(255, 255, 255, 0.13); }
+
+/* Inside the overview card the name block is already inset by the card. */
+.card-body.dsh-idle .who {
+  padding: 0;
+  margin-bottom: 2px;
+}
+
+/* A running dialog's line: the name, then what it is doing, on one row. */
+.idle-name {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.idle-doing {
+  color: var(--dim-2);
+}
+
+/* Waiting for an answer is the one line here a person must act on. */
+.idle-doing.waiting {
+  color: #f0b429;
+}
+
+/* The month's average per day: a caption under the three columns, not a figure. */
+.spend-avg {
+  font: 400 10.5px var(--font);
+  color: var(--dim-3);
+  margin-top: 2px;
+}

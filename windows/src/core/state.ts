@@ -61,6 +61,14 @@ export interface AgentTask {
    * it exists only while that dialog is open (see island/dsh.ts).
    */
   isDshSession?: boolean;
+  /**
+   * True for DeepSeek Harness's pill while nothing is running.
+   *
+   * The pill stays (it is the main tool, and it is where DSH lives in the list)
+   * but its card shows the idle summary instead of a ticker: what ran last, how
+   * many windows are open, what today has cost.
+   */
+  idle?: boolean;
 }
 
 /** What the compact island's middle shows (see Settings.compactIsland). */
@@ -396,8 +404,16 @@ class AppState {
     return musicPlaying(Spotify.state, sanitizeDeclared(this.settings, this.os).activeIntegrations);
   }
 
+  /**
+   * The pills beside the card: everything but the task the card is about.
+   *
+   * The focus is `focusTask`, not `focusId`: with nothing chosen yet the card
+   * already shows the first task, and filtering on the (still null) id listed
+   * that very task beside its own card.
+   */
   get otherTasks(): AgentTask[] {
-    return this.tasks.filter((t) => t.id !== this.focusId);
+    const shown = this.focusTask?.id ?? null;
+    return this.tasks.filter((t) => t.id !== shown);
   }
 
   setFocus(id: string) {

@@ -107,7 +107,10 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   model: { height: 300, botX: 62, botY: null, botDiameter: 0, agentMode: "none" },
   // The spend card: three periods, one row of figures, and the source line.
   // No Mochi — the numbers are the point.
-  spend: { height: 224, botX: 62, botY: null, botDiameter: 0, agentMode: "none" },
+  // Three periods side by side, one line of labels, one of figures: 184 is what
+  // the content needs. It was 224, and the spare 40 pixels sat as empty bands
+  // above and below the numbers.
+  spend: { height: 184, botX: 62, botY: null, botDiameter: 0, agentMode: "none" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually

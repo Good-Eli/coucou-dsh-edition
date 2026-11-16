@@ -14,13 +14,18 @@ import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations
 import { highlightRow, listRows, openRow } from "./github";
 import { pillDefinition, sessionSubtitle } from "../core/pills";
 import {
+  DSH_PILL_ID,
   Dsh,
   activeSession,
+  busyDialogs,
+  idleSummary,
   sessionFor,
   sessionHeading,
+  usageLine,
   type DshSession,
 } from "../core/dsh";
-import { isDshPill } from "../island/dsh";
+import { ageLabel } from "../core/plan";
+import { isDshPill, sessionName } from "../island/dsh";
 import {
   PlanCard, buildPlanPill, claudePillVisible, codexPillVisible, planCardOpen, refreshCodexPlanUsage,
 } from "./usage";
@@ -262,6 +267,14 @@ function buildOverview(actions: ViewActions): ViewHost {
   const nowBlock = h("div", { class: "saying" });
   nowBlock.style.display = "none";
   const tickerBody = h("div", { class: "card-body" }, who, nowBlock, ticker.el);
+
+  // DeepSeek Harness at rest: the pill stays (it is where DSH lives in the list)
+  // but there is no ticker to run, so the card answers the question a glance is
+  // for — what ran last, how many windows are open, what today has cost.
+  const idleWho = h("div", { class: "who stacked" });
+  const idleHead = h("div", { class: "idle-head" });
+  const idleLines = h("div", { class: "idle-lines" });
+  const idleBody = h("div", { class: "card-body dsh-idle" }, idleWho, idleHead, idleLines);
   const leftBody = h("div", { class: "left-body" });
   const jump = h(
     "button",
@@ -295,10 +308,25 @@ function buildOverview(actions: ViewActions): ViewHost {
   let pillIds = "";
   let detailOpen = false;
   let lastFocus: string | null = null;
-  let mode: "ticker" | "card" | "plan" | "diff" | "spotify" | "whatsapp" | "mail" | null = null;
+  let mode: "ticker" | "card" | "plan" | "diff" | "spotify" | "whatsapp" | "mail" | "dshIdle" | null = null;
   let cardKey = "";
   /** The list row highlighted at the last sync, to scroll only when it moves. */
   let shownSelection: number | null = null;
+  /** Which of the three overview layouts is on screen, so it is set only on change. */
+  let layout: "" | "wide" | "one-col" | "two-col" = "";
+
+  /**
+   * The one pill the wide card stands in for, when there is exactly one.
+   *
+   * Only a dialog pill: with a single Spotify pill and nothing else, the card
+   * must stay the overview, or the island would open on Spotify for no reason.
+   */
+  const onlyPill = (others: readonly AgentTask[]): AgentTask | null => {
+    if (others.length !== 1) return null;
+    const one = others[0];
+    if (!isDshPill(one.id) || one.id === DSH_PILL_ID) return null;
+    return one;
+  };
 
   // Leaving the overview or folding the island closes the diff, as on macOS.
   State.subscribe(() => {
@@ -376,7 +404,20 @@ function buildOverview(actions: ViewActions): ViewHost {
       State.notify();
     },
     sync() {
-      const task = State.focusTask;
+      const focus = State.focusTask;
+      const allOthers = State.otherTasks;
+      const only = onlyPill(allOthers);
+      // With a single dialog running, the card is that dialog: the overview of
+      // one thing is a worse answer than the thing itself. The column that would
+      // hold its pill has nothing else to show, so it goes away and the card
+      // takes the whole island.
+      const substitute = only && focus?.id === DSH_PILL_ID ? only : null;
+      const task = substitute ?? focus;
+      // The column is hidden only when it has nothing to show. A lone Spotify
+      // pill must still be there — hiding it would make it unreachable.
+      const wide = allOthers.length === 0 || substitute != null;
+      const others = wide ? [] : allOthers;
+
       if (task?.id !== lastFocus) {
         lastFocus = task?.id ?? null;
         detailOpen = false;
@@ -388,6 +429,15 @@ function buildOverview(actions: ViewActions): ViewHost {
       // A workspace or agent pill with a live session keeps the ticker; every
       // other pill shows its own card, exactly like IntegrationCardView.
       const sessionActive = task != null && hasSessionTicker(task);
+
+      const next = wide ? "wide" : allOthers.length <= 3 ? "one-col" : "two-col";
+      if (next !== layout) {
+        layout = next;
+        el.classList.toggle("wide", next === "wide");
+        el.classList.toggle("one-col", next === "one-col");
+        el.classList.toggle("two-col", next === "two-col");
+        cardKey = "";
+      }
 
       const planOpen = planCardOpen();
       if (mode === "plan" && !planOpen) {
@@ -421,6 +471,18 @@ function buildOverview(actions: ViewActions): ViewHost {
             open: (path) => void Bridge.openFileInVSCode(path),
           }));
         }
+      } else if (task && task.id === DSH_PILL_ID) {
+        // The tool's own pill is the overview: it says what is running now, or —
+        // when nothing is — what ran last, how much is open, what today has cost.
+        // Its name never changes and its card never becomes a ticker: that is
+        // what makes the list readable. A dialog's own pill shows the ticker.
+        if (mode !== "dshIdle") {
+          clear(leftBody);
+          leftBody.append(idleBody);
+          mode = "dshIdle";
+          cardKey = "";
+        }
+        syncOverviewCard(task, idleWho, idleHead, idleLines);
       } else if (task && sessionActive) {
         if (mode !== "ticker") {
           clear(leftBody);
@@ -521,19 +583,35 @@ function buildOverview(actions: ViewActions): ViewHost {
       highlightRow(rows, State.cardSelection, State.cardSelection !== shownSelection);
       shownSelection = State.cardSelection;
 
-      const others = State.otherTasks.slice(0, 4);
-      const pillKey = others.map((t) => `${t.id}:${t.color}:${t.pillBadge ?? ""}`).join("|");
+      // Six pills is two columns of three, which is what the card has room for.
+      // A seventh becomes "and N more" in the sixth cell rather than a row that
+      // would be cut off at the card's edge.
+      const MAX_PILLS = 6;
+      const shown = others.length > MAX_PILLS ? others.slice(0, MAX_PILLS - 1) : others;
+      const extra = others.length - shown.length;
+      const pillKey = [
+        ...shown.map((t) => `${t.id}:${t.color}:${t.pillBadge ?? ""}`),
+        `+${extra}`,
+      ].join("|");
       if (pillKey !== pillIds) {
         pillIds = pillKey;
         clear(pills);
         spotifyPill = null;
-        for (const t of others) {
+        for (const t of shown) {
           if (t.id === SPOTIFY_ID) {
             spotifyPill = buildSpotifyPill(t, () => actions.setFocus(t.id));
             pills.append(spotifyPill.el);
           } else {
             pills.append(buildPill(t, actions));
           }
+        }
+        if (extra > 0) {
+          pills.append(
+            h("div", {
+              class: "pill pill-more",
+              text: t("and {count} more", { count: extra }),
+            }),
+          );
         }
         pruneMiniBots();
       }
@@ -552,6 +630,90 @@ export function sessionOfTask(task: AgentTask): DshSession | null {
   const id = task.sessionId;
   const found = id ? sessionFor(Dsh.snapshot, id) : null;
   return found ?? activeSession(Dsh.snapshot);
+}
+
+/**
+ * The tool's own card: the overview of everything DeepSeek Harness is doing.
+ *
+ * "Idle" on its own is a dead end, and a ticker on the tool's pill made the list
+ * unreadable — the same pill was sometimes "DeepSeek Harness" and sometimes a
+ * dialog's name. So this card is always the same thing:
+ *
+ * - while dialogs are running, who they are and what each is doing right now;
+ * - when nothing runs, what ran last and how it ended;
+ * - and in both cases how many windows are open, how many subagents are working
+ *   inside them, and what today has cost.
+ *
+ * Every line comes from what DSH and the provider already reported.
+ */
+export function syncOverviewCard(
+  task: AgentTask,
+  who: HTMLElement,
+  head: HTMLElement,
+  lines: HTMLElement,
+) {
+  const summary = idleSummary(Dsh.snapshot);
+  const busy = busyDialogs(Dsh.snapshot);
+  clear(who);
+  if (task.modelLine) who.append(h("span", { class: "tool", text: task.modelLine }));
+  who.append(h("span", { class: "name", text: task.name }));
+
+  clear(lines);
+  const row = (text: string, quiet = false) =>
+    lines.append(h("div", { class: quiet ? "idle-line quiet" : "idle-line", text }));
+
+  if (busy.length > 0) {
+    // What is running, in the same order the pills are in: waiting first.
+    head.textContent = busy.length === 1 ? t("One dialog is working") : t("Dialogs are working");
+    // Two dialogs at most: the card is a glance, and a third name would push the
+    // summary underneath out of sight. Each gets two rows — the name, then what
+    // it is doing — because one row made both of them half a word long.
+    for (const session of busy.slice(0, 2)) {
+      const name = sessionName(session) || t("Untitled dialog");
+      const waiting = (Dsh.snapshot?.pending ?? []).some((p) => p.sessionId === session.id);
+      const said = session.say?.trim();
+      const doing = waiting
+        ? said
+          ? `${t("Waiting…")} · ${said}`
+          : t("Waiting…")
+        : said || stateWord(session.state);
+      row(name);
+      row(doing, true);
+    }
+    if (busy.length > 2) row(t("and {count} more", { count: busy.length - 2 }), true);
+  } else if (summary?.lastTitle) {
+    // Nothing is running: what ran last, how it ended and when, and its words.
+    head.textContent = t("Resting");
+    const age = summary.lastAt ? ageLabel(summary.lastAt) : "";
+    const state = summary.lastState === "error" ? t("failed") : t("finished");
+    row(`${summary.lastTitle} · ${state}${age ? ` ${age}` : ""}`);
+    if (summary.lastLine) row(summary.lastLine, true);
+  } else {
+    head.textContent = t("Resting");
+    row(t("Nothing has run yet in this session."), true);
+  }
+
+  // The summary is one line, not two: the card has room for a glance, and the
+  // count of windows and today's spend belong on the same row.
+  const parts = [t("Open: {count}", { count: summary?.dialogs ?? 0 })];
+  if (summary?.subagents) parts.push(t("Subagents: {count}", { count: summary.subagents }));
+  const spent = usageLine(Dsh.snapshot?.usage);
+  if (spent) parts.push(`${t("Today")}: ${spent}`);
+  row(parts.join(" · "), true);
+}
+
+/** One word for a session's state, for the overview's list. */
+function stateWord(state: string | null | undefined): string {
+  switch (state) {
+    case "working":
+      return t("Working…");
+    case "thinking":
+      return t("Thinking…");
+    case "error":
+      return t("The turn failed");
+    default:
+      return t("Waiting…");
+  }
 }
 
 /**
@@ -603,6 +765,9 @@ function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
     canvas,
     h("span", { class: "lbl", text: label }),
   );
+  // The label is cut by the layout, never by the model, so a wide pill shows the
+  // whole name. When it still does not fit, the full one is a hover away.
+  pill.title = label;
   pill.style.borderColor = `${task.color}24`;
   pill.addEventListener("mouseenter", () => {
     pill.style.background = `${task.color}2e`;

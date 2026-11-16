@@ -228,19 +228,25 @@ test("the pill exists only while the bridge is live", () => {
   applyDsh(snapshot());
   const task = State.tasks.find((t) => t.id === "dsh");
   assert.ok(task, "a live bridge has a pill");
-  assert.equal(task.sessionId, "s1");
+  // The tool's pill is the overview and is never renamed: it says
+  // "DeepSeek Harness" whatever the dialogs are called. A running dialog gets
+  // its own pill beside it.
+  assert.equal(task.name, "DeepSeek Harness");
+  const dialog = State.tasks.find((t) => t.id === "dsh:session:s1");
+  assert.ok(dialog, "and the running dialog has one of its own");
   // The model rides on the task so the card can show it next to the dialog's
   // name. It is not `finalLine`: that one means the turn is over.
-  assert.equal(task.modelLine, "v4-flash · HIGH", "the model DSH reported");
-  assert.equal(task.finalLine, null, "a running turn is not a finished one");
+  assert.equal(dialog.modelLine, "v4-flash · HIGH", "the model DSH reported");
+  assert.equal(dialog.finalLine, null, "a running turn is not a finished one");
 
   applyDsh(snapshot({ status: "off" }));
   assert.equal(State.tasks.find((t) => t.id === "dsh"), undefined, "a dead bridge has none");
+  assert.equal(State.tasks.find((t) => t.id === "dsh:session:s1"), undefined, "nor a dialog pill");
 });
 
 test("the pill shows no model when DSH reported none", () => {
   applyDsh(snapshot({ sessions: [{ ...SESSION, model: null }] }));
-  const task = State.tasks.find((t) => t.id === "dsh");
+  const task = State.tasks.find((t) => t.id === "dsh:session:s1");
   assert.equal(task.modelLine, null, "nothing is invented");
 });
 
@@ -250,33 +256,44 @@ test("the card shows the agent's real steps, not its title over and over", () =>
   // being dropped in Rust. The steps now come from `session.step`.
   const steps = ["pwsh cargo test", "edit src/main.ts", "pwsh cargo build"];
   applyDsh(snapshot({ sessions: [{ ...SESSION, steps, stepSeq: 12 }] }));
-  const task = State.tasks.find((t) => t.id === "dsh");
+  const task = State.tasks.find((t) => t.id === "dsh:session:s1");
   assert.deepEqual(task.steps, steps, "the host's own steps, in order");
   assert.equal(task.stepSeq, 12, "the count keeps going past the capped list");
 
   // A second snapshot with the same steps does not duplicate them: the list is
   // replaced, not appended to.
   applyDsh(snapshot({ sessions: [{ ...SESSION, steps, stepSeq: 12 }] }));
-  assert.deepEqual(State.tasks.find((t) => t.id === "dsh").steps, steps);
+  assert.deepEqual(State.tasks.find((t) => t.id === "dsh:session:s1").steps, steps);
   assert.equal(new Set(task.steps).size, 3);
 });
 
-test("a finished turn holds its last step still, a running one does not", () => {
+test("a finished turn takes the dialog's pill away, and the tool's pill rests", () => {
   const steps = ["pwsh cargo test", "edit src/main.ts"];
   applyDsh(snapshot({ sessions: [{ ...SESSION, state: "finished", steps }] }));
-  const task = State.tasks.find((t) => t.id === "dsh");
-  assert.equal(task.finalLine, "edit src/main.ts", "the ticker stops on what it did");
+  const tool = State.tasks.find((t) => t.id === "dsh");
+  // A finished dialog is not busy: it has no pill of its own, and the tool's
+  // pill goes back to the overview.
+  assert.equal(tool.idle, true, "nothing is running, so the overview rests");
+  assert.equal(State.tasks.find((t) => t.id === "dsh:session:s1"), undefined, "no dialog pill");
 
   applyDsh(snapshot({ sessions: [{ ...SESSION, state: "working", steps }] }));
-  assert.equal(task.finalLine, null, "a running turn keeps its shimmer");
+  assert.equal(tool.idle, false, "a running dialog is work in flight");
+  const dialog = State.tasks.find((t) => t.id === "dsh:session:s1");
+  assert.ok(dialog, "and it has its pill back");
+  assert.equal(dialog.finalLine, null, "a running turn keeps its shimmer");
 });
 
-test("the card's name is the dialog's, and its model sits beside it", () => {
+test("the dialog's pill is named after the dialog; the tool's pill is not", () => {
   applyDsh(snapshot({ sessions: [{ ...SESSION, title: "Проект: Coucou DSH Edition" }] }));
-  const task = State.tasks.find((t) => t.id === "dsh");
-  // The title is the dialog; the pill keeps the tool's name.
-  assert.equal(task.name, "DeepSeek Harness");
-  assert.equal(task.modelLine, "v4-flash · HIGH");
+  const tool = State.tasks.find((t) => t.id === "dsh");
+  const dialog = State.tasks.find((t) => t.id === "dsh:session:s1");
+  // Two running dialogs must be told apart in the list, so the dialog's pill
+  // carries the dialog's name. The tool's pill stays "DeepSeek Harness": a pill
+  // that is sometimes called one thing and sometimes another is the reason the
+  // list was unreadable.
+  assert.equal(tool.name, "DeepSeek Harness", "the tool keeps its name");
+  assert.match(dialog.name, /^Проект: Coucou DSH/, "the dialog names its own pill");
+  assert.equal(dialog.modelLine, "v4-flash · HIGH");
 });
 
 test("the card carries the time DSH will wait, and it is only shown", () => {

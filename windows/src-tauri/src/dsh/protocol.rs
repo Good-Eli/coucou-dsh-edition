@@ -159,6 +159,19 @@ pub struct Session {
     /// happening now": a raw command tells a person nothing.
     #[serde(default)]
     pub say: Option<String>,
+    /// `subagent` when DSH opened this session for itself while answering.
+    ///
+    /// A subagent has no dialog of its own: it starts and ends inside one turn,
+    /// so a pill for it would appear and vanish for no reason the person can
+    /// see. The island gives pills only to dialogs.
+    #[serde(default)]
+    pub origin: Option<String>,
+    /// The dialog a subagent was spawned from, when DSH says.
+    #[serde(default)]
+    pub parent_session: Option<String>,
+    /// How deep in the delegation tree this session sits: 0 for a dialog.
+    #[serde(default)]
+    pub delegation_depth: Option<u32>,
 }
 
 /// The first frame after a successful handshake.
@@ -533,6 +546,35 @@ mod tests {
         };
         assert_eq!(session_id, "s1");
         assert_eq!(text, "Добавлю тест на утечку");
+    }
+
+    #[test]
+    fn a_subagent_carries_the_marks_that_tell_it_from_a_dialog() {
+        // The island gives pills only to dialogs. A subagent starts and ends
+        // inside one turn of its parent, so the marks that identify it have to
+        // survive the wire: without them a pill would appear and vanish
+        // mid-answer, which is exactly the behaviour this replaces.
+        let line = r#"{"t":"session.upsert","session":{"id":"sub-1","cwd":"C:/work",
+            "origin":"subagent","parentSession":"s1","delegationDepth":1}}"#;
+        let Frame::SessionUpsert { session } = serde_json::from_str::<Frame>(line).unwrap() else {
+            panic!("expected session.upsert")
+        };
+        assert_eq!(session.origin.as_deref(), Some("subagent"));
+        assert_eq!(session.parent_session.as_deref(), Some("s1"));
+        assert_eq!(session.delegation_depth, Some(1));
+    }
+
+    #[test]
+    fn a_dialog_has_no_subagent_marks() {
+        // An older plugin sends none of the new fields at all: they must default
+        // to "this is a dialog", not fail the frame.
+        let line = r#"{"t":"session.upsert","session":{"id":"s1","cwd":"C:/work"}}"#;
+        let Frame::SessionUpsert { session } = serde_json::from_str::<Frame>(line).unwrap() else {
+            panic!("expected session.upsert")
+        };
+        assert_eq!(session.origin, None);
+        assert_eq!(session.parent_session, None);
+        assert_eq!(session.delegation_depth, None);
     }
 
     #[test]
