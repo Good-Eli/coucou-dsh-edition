@@ -864,15 +864,20 @@ export function apply(ctx, rawConfig) {
     if (usageBusy) return;
     if (!force && Date.now() - usageAt < USAGE_MIN_GAP_MS) return;
     usageBusy = true;
+    const started = Date.now();
     try {
       const value = await plusvibeUsage(ctx, log);
       if (value) {
         usage = value;
         usageAt = Date.now();
+        log('info', `usage: read today's spend in ${Date.now() - started} ms`);
         send({ t: 'usage', ...value });
       }
     } catch (error) {
-      log('warn', `usage: cannot read the PlusVibeAPI spend: ${clip(error?.message ?? error)}`);
+      // The island keeps whatever it had: an empty face is honest, a stale
+      // number is not. The elapsed time is here because the provider is slow
+      // in a way that looks like a broken key until you see the clock.
+      log('warn', `usage: cannot read the PlusVibeAPI spend after ${Date.now() - started} ms: ${clip(error?.message ?? error)}`);
     } finally {
       usageBusy = false;
     }
@@ -918,7 +923,11 @@ export function apply(ctx, rawConfig) {
     // DSH would prompt in its own window and the card would never appear.
     // Prepending puts the island in front regardless of registration order.
     const before = approvalHooks(ctx);
-    ctx.on('approval/request', onApproval, { prepend: true });
+    // The disposer is kept, not thrown away: it is what removes this listener
+    // when the bridge hands over to a newer copy of itself. Searching the hook
+    // list for our callback afterwards did not match the wrapped entry, so every
+    // reload left a dead answerer behind (the log grew to "38 other answerers").
+    const unhook = ctx.on('approval/request', onApproval, { prepend: true });
     const ours = approvalHooks(ctx)?.[0] ?? null;
     log(
       'info',
@@ -977,12 +986,24 @@ export function apply(ctx, rawConfig) {
     log,
     stop: () => {
       for (const requestId of [...pending.keys()]) settle(requestId, 'cancelled');
+      // The usage timer goes first: a handover must not leave the old copy
+      // asking the provider every few minutes for the rest of the day. Every
+      // reload used to leave one behind, and their retries piled up in the log.
+      clearInterval(usageTimer);
       for (const off of offs.splice(0)) {
         try {
           off();
         } catch {
           /* already gone */
         }
+      }
+      // The approval listener is not in `offs` (it is registered with prepend),
+      // so it is unhooked by its own disposer; the list search stays as a
+      // fallback for a host whose `on()` returns nothing.
+      try {
+        unhook?.();
+      } catch {
+        /* already gone */
       }
       const hook = approvalHooks(ctx);
       const ours = hook?.findIndex((h) => h.callback === onApproval) ?? -1;
@@ -1004,6 +1025,8 @@ const PLUSVIBE_BASE = 'https://plusvibeapi.ru';
 const USAGE_EVERY_MS = 5 * 60_000;
 /** …but a turn end should not turn into a request storm. */
 const USAGE_MIN_GAP_MS = 60_000;
+/** The provider can take fifteen seconds to answer; two are no reason to give up. */
+const USAGE_REQUEST_MS = 30_000;
 
 /** Local midnight, which is what "today" means to the person reading it. */
 function localDayStart(now = new Date()) {
@@ -1025,6 +1048,11 @@ const finite = (value) => (typeof value === 'number' && Number.isFinite(value) ?
  * never sits in this file's memory longer than the request. The numbers are the
  * provider's own — a key that cannot be resolved, or a provider that answers
  * nothing, leaves the island without a number rather than with a guess.
+ *
+ * The history endpoint takes at most 100 rows a page and a busy day has four
+ * hundred, so the pages are fetched at once rather than one after another: the
+ * provider answers in anywhere from three to fifteen seconds, and doing that
+ * four times over would make the island's total arrive a minute late.
  */
 async function plusvibeUsage(ctx, log) {
   const credentials = ctx.get?.('credentials');
@@ -1041,26 +1069,29 @@ async function plusvibeUsage(ctx, log) {
 
   const start = localDayStart();
   const from = encodeURIComponent(start.toISOString());
+  const headers = { Authorization: `Bearer ${key}`, Accept: 'application/json' };
+  const page = async (number) => {
+    const url = `${PLUSVIBE_BASE}/v1/generations?limit=100&page=${number}&dateFrom=${from}`;
+    const response = await fetch(url, { headers, signal: AbortSignal.timeout(USAGE_REQUEST_MS) });
+    if (!response.ok) throw new Error(`the usage API answered ${response.status}`);
+    return response.json();
+  };
+
+  // The first page says how many there are, so the rest can go out together.
+  const first = await page(1);
+  const rows = Array.isArray(first?.data) ? [...first.data] : [];
+  const pages = Math.min(50, Math.ceil(finite(first?.total) / 100));
+  if (pages > 1) {
+    const rest = await Promise.all(Array.from({ length: pages - 1 }, (_, i) => page(i + 2)));
+    for (const body of rest) if (Array.isArray(body?.data)) rows.push(...body.data);
+  }
+
   let tokens = 0;
   let rub = 0;
-  // One page is the normal case; the loop only exists because a busy day can
-  // have more records than the page size.
-  for (let page = 1; page <= 20; page += 1) {
-    const url = `${PLUSVIBE_BASE}/v1/generations?limit=100&page=${page}&dateFrom=${from}`;
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!response.ok) throw new Error(`the usage API answered ${response.status}`);
-    const body = await response.json();
-    const rows = Array.isArray(body?.data) ? body.data : [];
-    for (const row of rows) {
-      // The API has carried both spellings; read either rather than guess.
-      tokens += finite(row.promptTokens ?? row.prompt_tokens) + finite(row.completionTokens ?? row.completion_tokens);
-      rub += finite(row.priceRub ?? row.cost_rub);
-    }
-    const total = finite(body?.total);
-    if (rows.length < 100 || page * 100 >= total) break;
+  for (const row of rows) {
+    // The two endpoints spell these differently; read either rather than guess.
+    tokens += finite(row.promptTokens ?? row.prompt_tokens) + finite(row.completionTokens ?? row.completion_tokens);
+    rub += finite(row.priceRub ?? row.cost_rub);
   }
   return { tokens, rub, day: dayKey(start) };
 }
