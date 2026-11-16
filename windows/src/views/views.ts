@@ -388,14 +388,17 @@ function buildOverview(actions: ViewActions): ViewHost {
         clear(who);
         who.className = task.id === DSH_PILL_ID ? "who stacked" : "who";
         if (task.id === DSH_PILL_ID) {
-          // DeepSeek Harness: the card is about one dialog, so it leads with
-          // that dialog's name and the model it runs, not with the word
-          // "Agent" and a count of identical lines.
+          // DeepSeek Harness: the card is about one dialog, so it names that
+          // dialog and the model it runs instead of saying "Agent" and counting
+          // identical lines. The model is the caption above the name, not
+          // beside it: the name is the longest thing here and the jump button
+          // eats the top-right corner, so the name gets the row underneath it
+          // to itself. No colour dot either — the Mochi bot beside the card
+          // already gives it a face.
           const session = activeSession(Dsh.snapshot);
           const heading = sessionHeading(session);
-          who.append(dot(task.color, 7));
-          who.append(h("span", { class: "name", text: heading || task.name }));
           if (task.modelLine) who.append(h("span", { class: "tool", text: task.modelLine }));
+          who.append(h("span", { class: "name", text: heading || task.name }));
         } else {
           // The agent's name is already the pill's: the label says what kind of
           // pill it is, as on the Mac (PillDefinition.sessionSubtitle).

@@ -567,25 +567,28 @@ body {
 }
 
 /*
- * DeepSeek Harness's card: two lines instead of one crowded row.
+ * DeepSeek Harness's card: a caption and a name, instead of one crowded row.
  *
- * The name of the dialog is the longest thing on the card and the model is the
- * most useful thing next to it, so they get a line each instead of fighting for
- * 178 px: the name takes the whole width and truncates, the model sits under it.
+ * The dialog's name is the longest thing on the card, and the jump button takes
+ * the top-right corner: so the model sits above as a dim caption (where the
+ * button cannot reach it) and the name gets the row underneath to itself.
+ * 322 − 108 (the Mochi bot) − 18 = 196 px, enough for a real dialog title —
+ * "Починить запросы одобрения" needs 183 px at this font, and used to be cut.
  */
 .who.stacked {
   flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  padding-top: 2px;
-}
-.who.stacked .name {
-  max-width: 100%;
-  align-self: stretch;
+  align-items: stretch;
+  gap: 1px;
+  padding: 0 18px 0 108px;
 }
 .who.stacked .tool {
   font-size: 10.5px;
   color: var(--dim-2);
+  max-width: 100%;
+  /* Clears the jump button, which floats over this row. */
+  padding-right: 22px;
+}
+.who.stacked .name {
   max-width: 100%;
   align-self: stretch;
 }
