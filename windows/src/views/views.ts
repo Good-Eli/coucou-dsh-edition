@@ -13,7 +13,14 @@ import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 import { highlightRow, listRows, openRow } from "./github";
 import { pillDefinition, sessionSubtitle } from "../core/pills";
-import { DSH_PILL_ID, Dsh, activeSession, sessionHeading } from "../core/dsh";
+import {
+  Dsh,
+  activeSession,
+  sessionFor,
+  sessionHeading,
+  type DshSession,
+} from "../core/dsh";
+import { isDshPill } from "../island/dsh";
 import {
   PlanCard, buildPlanPill, claudePillVisible, codexPillVisible, planCardOpen, refreshCodexPlanUsage,
 } from "./usage";
@@ -186,7 +193,10 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const el = h(
     "div",
     { id: "header" },
-    h("div", { class: "tabs" }, tabHome, tabChat, tabDrop, spendBtn),
+    // The spend card sits right after the house: it is about the work DSH is
+    // doing, so it belongs with the tabs that switch what the island shows, and
+    // it is one click away from the default view.
+    h("div", { class: "tabs" }, tabHome, spendBtn, tabChat, tabDrop),
     h("div", { class: "header-actions" }, planPills, gearBtn, soundBtn, closeBtn),
   );
   const headerActions = el.lastElementChild as HTMLElement;
@@ -419,9 +429,13 @@ function buildOverview(actions: ViewActions): ViewHost {
           cardKey = "";
         }
         clear(who);
-        who.className = task.id === DSH_PILL_ID ? "who stacked" : "who";
+        // Every DSH card — the tool's and each dialog's own — reads the same
+        // way: the model as a caption, the dialog's name under it, and the
+        // agent's sentence as "now".
+        const dshCard = isDshPill(task.id);
+        who.className = dshCard ? "who stacked" : "who";
         nowBlock.style.display = "none";
-        if (task.id === DSH_PILL_ID) {
+        if (dshCard) {
           // DeepSeek Harness: the card is about one dialog, so it names that
           // dialog and the model it runs instead of saying "Agent" and counting
           // identical lines. The model is the caption above the name, not
@@ -429,7 +443,7 @@ function buildOverview(actions: ViewActions): ViewHost {
           // eats the top-right corner, so the name gets the row underneath it
           // to itself. No colour dot either — the Mochi bot beside the card
           // already gives it a face.
-          const session = activeSession(Dsh.snapshot);
+          const session = sessionOfTask(task);
           const heading = sessionHeading(session);
           if (task.modelLine) who.append(h("span", { class: "tool", text: task.modelLine }));
           who.append(h("span", { class: "name", text: heading || task.name }));
@@ -526,6 +540,18 @@ function buildOverview(actions: ViewActions): ViewHost {
       spotifyPill?.sync();
     },
   };
+}
+
+/**
+ * The session a card is about: the pill's own dialog, or the focused one.
+ *
+ * A dialog pill names its session in its id, so the card follows the pill the
+ * person clicked rather than whichever session happens to be busiest.
+ */
+export function sessionOfTask(task: AgentTask): DshSession | null {
+  const id = task.sessionId;
+  const found = id ? sessionFor(Dsh.snapshot, id) : null;
+  return found ?? activeSession(Dsh.snapshot);
 }
 
 /**

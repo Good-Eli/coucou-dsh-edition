@@ -10,9 +10,22 @@ import assert from 'node:assert/strict';
 
 import bridge from '../bridge.mjs';
 
-const { attemptText, lastSentence } = bridge;
+const { attemptText, contentText, lastSentence } = bridge;
 
 const stream = (...records) => records;
+
+test('the finished answer is read from its content blocks', () => {
+  // `assistant/message` is what DSH appends at the end of a step: the answer is
+  // in content blocks, not in a stream.
+  const text = contentText([
+    { type: 'reasoning', text: 'секретная мысль' },
+    { type: 'text', text: 'Проверю сборку. ' },
+    { type: 'tool-call', id: 'c1', name: 'pwsh' },
+    { type: 'text', text: 'Добавлю тест на утечку.' },
+  ]);
+  assert.equal(text, 'Проверю сборку. Добавлю тест на утечку.');
+  assert.equal(lastSentence(text), 'Добавлю тест на утечку.');
+});
 
 test('only what the agent said is read, never what it thought', () => {
   const text = attemptText(

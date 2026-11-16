@@ -585,7 +585,7 @@ V4.1 Flash · HIGH · Working
 ### 11.2 Git и upstream
 
 - `origin` — форк, `upstream` — `Louis-CFM/coucou`.
-- Рабочая ветка `dsh/0.5.9` (не `main`); `main` форка — зеркало upstream.
+- Рабочая ветка — `main` форка (единственная; раньше была `dsh/0.5.9`).
 - Собственные изменения — новые файлы + минимальные правки; список правок в
   `docs/UPSTREAM.md` (файл, причина, как разрешать конфликты).
 - Синхронизация: `git fetch upstream`, ветка `sync/upstream-YYYY-MM-DD`, merge/rebase,

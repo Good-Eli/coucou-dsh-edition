@@ -16,7 +16,7 @@ import {
 import { cornerRadius, growsUp } from "../core/corners";
 import { Sound } from "../core/sound";
 import { DSH_PILL_ID as DSH_ID, Dsh, routeFor, usageLine } from "../core/dsh";
-import { chooseEffort, chooseModel } from "./dsh";
+import { DSH_SESSION_PREFIX, chooseEffort, chooseModel } from "./dsh";
 import { State, compactIslandMode } from "../core/state";
 import { SPOTIFY_ID, Spotify, islandDances } from "../core/spotify";
 import { BotEngine, hexToRGB } from "../mochi/engine";
@@ -221,6 +221,12 @@ export class Island {
       setFocus: (id) => {
         State.setFocus(id);
         Sound.play("blip");
+        // A pill that stands for one dialog makes that dialog the one the card
+        // is about. Purely local: it changes what is shown, not what DSH does.
+        if (id.startsWith(DSH_SESSION_PREFIX)) {
+          const sessionId = id.slice(DSH_SESSION_PREFIX.length);
+          void Bridge.dshSelectSession(sessionId);
+        }
         // A pill with a waiting request opens on its card: going back to it
         // after looking at another pill brings the card up again.
         const req = State.pendingApproval;

@@ -54,6 +54,13 @@ export interface AgentTask {
    * the last action it took.
    */
   sayLine?: string | null;
+  /**
+   * A pill that stands for one DSH dialog rather than for the tool.
+   *
+   * Its id is `dsh:session:<sessionId>`, its name is that dialog's own title, and
+   * it exists only while that dialog is open (see island/dsh.ts).
+   */
+  isDshSession?: boolean;
 }
 
 /** What the compact island's middle shows (see Settings.compactIsland). */

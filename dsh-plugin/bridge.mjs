@@ -39,7 +39,7 @@ export const PROTOCOL = 1;
  * this file in the entry's URL for exactly that reason; this number is what
  * makes the new code visible in `bridge.log` once it does load.
  */
-export const BUILD = 14;
+export const BUILD = 15;
 
 /**
  * Why this plugin does not decide its worth from the DSH version string.
@@ -605,6 +605,21 @@ export function apply(ctx, rawConfig) {
 
   // ── session events ─────────────────────────────────────────────────────────
 
+  /**
+   * Tells Coucou what the agent said, at most once a second.
+   *
+   * The same sentence arrives again on every chunk of a stream; a frame per
+   * chunk would flood the pipe for a line the island can only show one copy of.
+   */
+  const say = (id, line) => {
+    const previous = said.get(id);
+    const at = Date.now();
+    if (previous && previous.text === line) return;
+    if (previous && at - previous.at < SAY_EVERY_MS) return;
+    said.set(id, { text: line, at });
+    send({ t: 'session.say', sessionId: id, text: line, ts: at });
+  };
+
   const onSessionEvent = (session, event) => {
     const id = session?.id ?? event?.sessionId;
     if (!id) return;
@@ -638,17 +653,20 @@ export function apply(ctx, rawConfig) {
       // What the agent is saying, in its own words. The card's first line is
       // this rather than a raw command: "Добавлю тест на утечку" tells a person
       // what is going on, `cd 'C:\LocalAI\…'` does not.
+      //
+      // `assistant/message` is the finished step: its content holds the answer.
+      // `assistant/attempt` is the same step's stream, which is what arrives
+      // when the attempt failed or was interrupted — and it is also the only
+      // shape older hosts send.
+      case 'assistant/message': {
+        const line = lastSentence(contentText(event.data?.message?.content));
+        if (line) say(id, line);
+        break;
+      }
+
       case 'assistant/attempt': {
         const line = lastSentence(attemptText(event.data?.stream));
-        if (!line) break;
-        const previous = said.get(id);
-        const at = Date.now();
-        // Streaming produces the same sentence over and over: send a change, or
-        // the same line once a second at most, never a frame per chunk.
-        if (previous && previous.text === line) break;
-        if (previous && at - previous.at < SAY_EVERY_MS) break;
-        said.set(id, { text: line, at });
-        send({ t: 'session.say', sessionId: id, text: line, ts: at });
+        if (line) say(id, line);
         break;
       }
 
@@ -1272,12 +1290,12 @@ async function plusvibeSpendStats(ctx, log) {
 }
 
 /**
- * The visible text of one attempt, as it stands.
+ * The visible text of one assistant step.
  *
- * `assistant/attempt` carries the whole attempt's stream on every event: the
- * `text-chunks` records hold what the model wrote for the user, and
- * `reasoning-chunks` hold what it thought to itself. Only the first kind is
- * read — the island shows what the agent says, never its private reasoning.
+ * Two shapes carry it, and both are read: `assistant/message` holds the finished
+ * answer as content blocks, and `assistant/attempt` holds the stream it was
+ * written from. Only `text` blocks are read — `reasoning` blocks are what the
+ * model thought to itself, and the island has no business showing that.
  */
 function attemptText(stream) {
   if (!Array.isArray(stream)) return '';
@@ -1288,6 +1306,17 @@ function attemptText(stream) {
     // Only the tail can be shown; keeping the whole answer wastes memory on a
     // long one and the last sentence is all the card ever needs.
     if (text.length > 4000) text = text.slice(-4000);
+  }
+  return text;
+}
+
+/** The text blocks of an assistant message's content, joined. */
+function contentText(content) {
+  if (!Array.isArray(content)) return '';
+  let text = '';
+  for (const block of content) {
+    if (block?.type !== 'text' || typeof block.text !== 'string') continue;
+    text += block.text;
   }
   return text;
 }
@@ -1445,4 +1474,4 @@ function currentUserSid() {
   }
 }
 
-export default { name, apply, PROTOCOL, maskSecrets, clip, lastSentence, attemptText, BUILD };
+export default { name, apply, PROTOCOL, maskSecrets, clip, lastSentence, attemptText, contentText, BUILD };

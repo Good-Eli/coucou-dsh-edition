@@ -338,6 +338,11 @@ export const Bridge = {
   /** Asks the host for a fresh catalog. */
   dshRefreshCatalog: () => call<void>("dsh_refresh_catalog"),
   /**
+   * Remembers which DSH dialog the island is showing. Purely local: it changes
+   * which session the card is about, not what DSH does.
+   */
+  dshSelectSession: (sessionId: string | null) => call<void>("dsh_select_session", { sessionId }),
+  /**
    * Asks for today's, the week's and the month's spend.
    *
    * The figures come back as a `dsh-spend` event, not as this call's value: the
