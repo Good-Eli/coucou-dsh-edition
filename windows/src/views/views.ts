@@ -721,10 +721,11 @@ function stateWord(state: string | null | undefined): string {
  * truncated command.
  *
  * The agent's own sentence wins — "Добавлю тест на утечку — иначе она вернётся"
- * is what a person wants to read, while `cd 'C:\LocalAI\…'` is not. Without one
- * (a turn that has not spoken yet) the state says what it can, and the last
- * action fills the gap while it works. Nothing is invented for a finished turn:
- * the ticker below already holds what it did.
+ * is what a person wants to read. Without one, the state says what it can, and
+ * nothing else: the ticker directly below already lists the actions, so repeating
+ * the last one here said the same thing twice — and when DSH sent a tool with no
+ * title, what got repeated was the bare tool name (`todo_write`), which is the
+ * raw identifier this line exists to replace.
  */
 export function nowLine(task: AgentTask): string | null {
   const said = task.sayLine?.trim();
@@ -732,13 +733,12 @@ export function nowLine(task: AgentTask): string | null {
   switch (task.state) {
     case "thinking":
       return t("Thinking…");
-    case "working": {
-      const last = task.steps.at(-1)?.trim();
-      return last || t("Working…");
-    }
+    case "working":
+      return t("Working…");
     case "error":
       return t("The turn failed");
     default:
+      // A finished turn keeps its ticker, so a line above it would only repeat it.
       return null;
   }
 }

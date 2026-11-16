@@ -523,41 +523,37 @@ body {
   height: 100%;
 }
 
+/*
+ * The card takes whatever the pills do not need.
+ *
+ * A pill is a fixed size — it is a list row, not a panel — so the column on the
+ * right is exactly as wide as its pills and no wider. The card then gets all the
+ * remaining space, which is why a single running dialog no longer leaves a wide
+ * empty strip: with one column of pills the card is about 500 pixels, with two
+ * columns 322, and with none at all the whole island.
+ *
+ * Three layouts:
+ *
+ *   .wide      nothing to list: the column is gone and the card has it all
+ *   .one-col   two or three pills: one column
+ *   .two-col   four or more: two columns of three
+ */
 .overview > .left {
-  flex: 0 0 322px;
-  width: 322px;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
 }
 
 .overview > .right {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
 }
 
-/*
- * The overview's two columns follow the work rather than a fixed split.
- *
- * A fixed 322-pixel left card left a wide empty strip whenever fewer than two
- * pills were running — which is most of the time. Three layouts instead:
- *
- *   .wide      nothing to list: the column is gone and the card has it all
- *   .one-col   two or three pills: one column, wide enough for a whole title
- *   .two-col   four or more: two columns of three, the card back to 322
- */
 .overview.wide > .right {
   display: none;
 }
 
-.overview.wide > .left {
-  flex: 1 1 auto;
-  width: auto;
-}
-
-.overview.one-col > .left {
-  flex: 0 0 268px;
-  width: 268px;
-}
-
 .overview.one-col .pills {
-  grid-template-columns: 1fr;
+  grid-template-columns: 174px;
 }
 
 .card-body {
@@ -849,7 +845,9 @@ body {
   z-index: 1;
   height: 100%;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* Fixed cells: the column is as wide as its pills and never wider, so the
+     card beside it can take everything that is left. */
+  grid-template-columns: repeat(2, 174px);
   grid-auto-rows: 36px;
   gap: 4px;
   align-content: center;
