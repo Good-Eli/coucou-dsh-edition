@@ -1099,6 +1099,22 @@ export class Island {
    * song, the plan): a new width animates the island and, once folded,
    * resizes the window to it.
    */
+  /**
+   * How wide the closed island's line is, in fractional CSS px.
+   *
+   * `scrollWidth` is a whole number — it rounds — so a line whose true width is
+   * 88.4 reports 88. The island was then sized 0.4 px short and, because the text
+   * element ellipsises on any overflow at all, "19,15 ₽" came out as "19,15…":
+   * for some values and not others, which is what made it look random.
+   * `getBoundingClientRect` keeps the fraction.
+   *
+   * Zero means the copy has no layout yet (a hidden or detached ancestor), not
+   * that the line is empty: the caller must not commit a width from it.
+   */
+  private measureClosedText(): number {
+    return Math.max(0, this.closedMeasure.getBoundingClientRect().width);
+  }
+
   private updateClosed() {
     const style = closedIsland(State.settings.closedIsland);
     const track = Spotify.state.track;
@@ -1115,7 +1131,6 @@ export class Island {
     const shown = State.mode === "hidden" && this.closedShows;
     this.closedEl.classList.toggle("on", shown && content != null);
     if (key === this.closedKey) return;
-    this.closedKey = key;
     this.closedText.textContent = content?.text ?? "";
     this.closedEl.classList.toggle("note", content?.note === true);
     this.closedDot.style.display = content?.dot ? "" : "none";
@@ -1125,7 +1140,15 @@ export class Island {
     // computed — reading it in place returns the old width and cuts the line.
     if (content) this.closedMeasure.textContent = content.text;
     const extras = (content?.dot ? 12 : 0) + (content?.note ? 16 : 0);
-    const textWidth = content ? this.closedMeasure.scrollWidth : 0;
+    const textWidth = content ? this.measureClosedText() : 0;
+    if (content && !(textWidth > 0)) {
+      // Nothing to measure from: the copy has no layout yet (a hidden or
+      // detached ancestor). Keep the width we have and leave the key uncommitted,
+      // so the next tick measures again instead of freezing a wrong width until
+      // the line happens to change.
+      return;
+    }
+    this.closedKey = key;
     const w = closedWidth(textWidth, extras);
     if (w !== this.closedW) {
       this.closedW = w;

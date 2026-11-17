@@ -95,9 +95,27 @@ export function closedContent(style: ClosedIsland, input: ClosedInputs): ClosedC
   }
 }
 
-/** The closed island's width for a text `textWidth` px wide (0 for none). */
+/**
+ * A hair of slack, in CSS px.
+ *
+ * The width handed to the window is a whole number, so a line whose true width is
+ * 88.4 gets an island that is 0.4 px too narrow — and `#island-closed .text`
+ * ellipsises on *any* overflow, so those four tenths replaced the "₽" with "…".
+ * That is why the island sometimes looked too small for no visible reason: it
+ * depended on the fractional part of the text's width, which changes with the
+ * digits. Half a pixel is enough to cover it and invisible in a 24-pixel island.
+ */
+export const CLOSED_SLACK = 0.5;
+
+/**
+ * The closed island's width for a text `textWidth` px wide (0 for none).
+ *
+ * `textWidth` must be the *fractional* width, measured with
+ * `getBoundingClientRect` — not `scrollWidth`, which rounds to a whole pixel and
+ * loses the fraction this function then cannot know to add back.
+ */
 export function closedWidth(textWidth: number, extras = 0): number {
   if (!(textWidth > 0)) return CLOSED_MIN_W;
-  const w = Math.ceil(textWidth + extras + CLOSED_PAD * 2);
+  const w = Math.ceil(textWidth + extras + CLOSED_PAD * 2 + CLOSED_SLACK);
   return Math.max(CLOSED_MIN_W, Math.min(CLOSED_MAX_W, w));
 }

@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  CLOSED_ISLANDS, CLOSED_MAX_W, CLOSED_MIN_W, CLOSED_PAD, closedContent, closedIsland, closedWidth,
+  CLOSED_ISLANDS, CLOSED_MAX_W, CLOSED_MIN_W, CLOSED_PAD, CLOSED_SLACK, closedContent, closedIsland, closedWidth,
 } from "../src/core/closed.ts";
 
 const NOW = new Date(2026, 10, 2, 20, 28);
@@ -49,7 +49,10 @@ test("what plays, with its note; the time when nothing plays", () => {
 test("the island is as wide as its line, within bounds", () => {
   assert.equal(closedWidth(0), CLOSED_MIN_W);
   assert.equal(closedWidth(Number.NaN), CLOSED_MIN_W);
-  assert.equal(closedWidth(100), 100 + CLOSED_PAD * 2);
-  assert.equal(closedWidth(100, 12), 112 + CLOSED_PAD * 2);
+  // The padding on both sides, plus a hair of slack so a fractional line never
+  // ends up a fraction of a pixel short and ellipsised (see CLOSED_SLACK). The
+  // result is a whole number, because that is what the window takes.
+  assert.equal(closedWidth(100), Math.ceil(100 + CLOSED_PAD * 2 + CLOSED_SLACK));
+  assert.equal(closedWidth(100, 12), Math.ceil(112 + CLOSED_PAD * 2 + CLOSED_SLACK));
   assert.equal(closedWidth(5000), CLOSED_MAX_W);
 });
